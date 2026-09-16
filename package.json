@@ -7,7 +7,8 @@
     "start": "node server.js",
     "db:setup": "node scripts/setup-db.cjs",
     "db:reset": "node scripts/setup-db.cjs --seed",
-    "test": "node scripts/test.cjs"
+    "test": "node scripts/test.cjs",
+    "use-neon": "node scripts/use-neon.cjs"
   },
   "keywords": [],
   "author": "",

@@ -57,7 +57,30 @@ async function pointsOf(who, name, win) {
 
 const countRows = async (sql, params) => Number((await query(sql, params)).rows[0].c);
 
+// The first thing this suite does is DROP every table. Against a remote database that
+// destroys real data, so refuse unless the target is clearly local and disposable.
+function refuseToWipeProduction() {
+  const url = process.env.DATABASE_URL;
+  if (!url) return; // PGlite, local file, fine
+  const host = (url.match(/@([^/:]+)/) || [])[1] || '';
+  const isLocal = /^(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)$/.test(host);
+  if (isLocal || process.env.ALLOW_DESTRUCTIVE_TESTS === '1') return;
+
+  console.error('\nREFUSING TO RUN.\n');
+  console.error('  These tests DROP every table before they start, and DATABASE_URL points at');
+  console.error('  a remote database:\n');
+  console.error('      ' + host + '\n');
+  console.error('  If that is your live app, running this would delete everyone\'s points.\n');
+  console.error('  To test safely, comment out DATABASE_URL in .env and run again — the suite');
+  console.error('  will use the local offline database instead.\n');
+  console.error('  If you genuinely mean to wipe that remote database:');
+  console.error('      ALLOW_DESTRUCTIVE_TESTS=1 npm test\n');
+  process.exit(1);
+}
+
 async function main() {
+  refuseToWipeProduction();
+
   // Fresh database every run.
   await query(fs.readFileSync('db/schema.sql', 'utf8'));
   await query(fs.readFileSync('db/seed.sql', 'utf8'));
