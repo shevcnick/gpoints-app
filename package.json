@@ -14,11 +14,13 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "@electric-sql/pglite": "^0.5.8",
     "bcryptjs": "^3.0.3",
     "cookie-parser": "^1.4.7",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8"
   }
 }

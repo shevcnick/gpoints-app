@@ -10,6 +10,17 @@
 
 const USE_PGLITE = !process.env.DATABASE_URL || process.env.USE_PGLITE === '1';
 
+// PGlite is a devDependency and never ships to production. Without this, forgetting to set
+// DATABASE_URL in Vercel fails as "Cannot find module @electric-sql/pglite", which says
+// nothing about the actual mistake.
+if (USE_PGLITE && process.env.NODE_ENV === 'production') {
+  throw new Error(
+    'DATABASE_URL is not set. In production it must point at your Neon pooled connection '
+    + 'string (the host contains "-pooler"). Set it under Settings -> Environment Variables '
+    + 'in Vercel, then redeploy.'
+  );
+}
+
 let backend;
 
 if (USE_PGLITE) {
