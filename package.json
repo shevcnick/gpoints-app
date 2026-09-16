@@ -8,7 +8,8 @@
     "db:setup": "node scripts/setup-db.cjs",
     "db:reset": "node scripts/setup-db.cjs --seed",
     "test": "node scripts/test.cjs",
-    "use-neon": "node scripts/use-neon.cjs"
+    "use-neon": "node scripts/use-neon.cjs",
+    "db:migrate": "node scripts/migrate.cjs"
   },
   "keywords": [],
   "author": "",
