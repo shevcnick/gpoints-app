@@ -332,6 +332,32 @@ async function main() {
     assert.strictEqual(dupe.status, 409, 'usernames must be case-insensitively unique');
   });
 
+  await check('the invite code tolerates case and stray whitespace', async () => {
+    // Phone keyboards capitalise the first letter of a field, which used to lock
+    // people out of signup entirely.
+    const code = process.env.INVITE_CODE;
+    const variants = [code.toUpperCase(), '  ' + code + '  ', code.toLowerCase()];
+    for (let i = 0; i < variants.length; i++) {
+      const r = await call('v' + i, '/auth/signup', {
+        method: 'POST',
+        body: {
+          inviteCode: variants[i], username: 'variant' + i,
+          displayName: 'V' + i, password: 'test',
+        },
+      });
+      assert.strictEqual(r.status, 201,
+        'invite code ' + JSON.stringify(variants[i]) + ' should be accepted, got ' + r.status);
+    }
+    const wrong = await call('vx', '/auth/signup', {
+      method: 'POST',
+      body: {
+        inviteCode: code + 'x', username: 'variantx',
+        displayName: 'VX', password: 'test',
+      },
+    });
+    assert.strictEqual(wrong.status, 403, 'a genuinely wrong code must still be refused');
+  });
+
   await check('bad usernames and short passwords are refused at signup', async () => {
     for (const username of ['ab', 'has space', 'UPPER!', 'x'.repeat(21)]) {
       const r = await call('n', '/auth/signup', {

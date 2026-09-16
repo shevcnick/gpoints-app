@@ -8,7 +8,10 @@ router.post('/signup', async (req, res, next) => {
   try {
     const { inviteCode, username, displayName, password } = req.body || {};
 
-    if (inviteCode !== process.env.INVITE_CODE)
+    // Forgiving on case and stray whitespace: phone keyboards capitalise the first
+    // letter and copy-paste drags spaces along, and neither should lock a friend out.
+    const tidy = (s) => String(s ?? '').trim().toLowerCase();
+    if (tidy(inviteCode) !== tidy(process.env.INVITE_CODE))
       return res.status(403).json({ error: 'Wrong invite code. Ask Nick for it.' });
 
     const uname = String(username || '').trim().toLowerCase();
