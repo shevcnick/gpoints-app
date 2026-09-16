@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>G Points — Leaderboard</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div class="wrap">
+  <h1>🏆 Leaderboard</h1>
+  <p class="sub" id="sub">Loading…</p>
+
+  <div class="tabs" id="tabs">
+    <button data-w="week" class="active">Week</button>
+    <button data-w="month">Month</button>
+    <button data-w="year">Year</button>
+    <button data-w="all">All time</button>
+  </div>
+
+  <div id="msg" class="msg"></div>
+  <div class="card" id="board"><div class="empty">Loading…</div></div>
+</div>
+<script src="/app.js"></script>
+<script>
+const board = document.getElementById('board');
+const sub = document.getElementById('sub');
+const msg = document.getElementById('msg');
+let current = 'week';
+
+const LABEL = { week: 'this week', month: 'this month', year: 'this year', all: 'all time' };
+
+async function load(win) {
+  current = win;
+  document.querySelectorAll('#tabs button')
+    .forEach((b) => b.classList.toggle('active', b.dataset.w === win));
+  board.innerHTML = '<div class="empty">Loading…</div>';
+  clear(msg);
+
+  try {
+    const { standings, season, timezone } = await api('/leaderboard?window=' + win);
+    sub.textContent = `Season ${season} · ${LABEL[win]} · times in ${timezone}`;
+
+    if (!standings.length) {
+      board.innerHTML = '<div class="empty">Nobody here yet.</div>';
+      return;
+    }
+    // Equal scores share a rank, so three people on 0 are all joint-whatever.
+    let rank = 0, lastPoints = null;
+    board.innerHTML = standings.map((s, i) => {
+      if (s.points !== lastPoints) { rank = i + 1; lastPoints = s.points; }
+      const top = rank === 1 && s.points > 0 ? ' top1' : '';
+      return `<div class="lb${top}">
+        <div class="rank">${rank}</div>
+        <div class="emoji">${esc(s.avatar_emoji)}</div>
+        <div class="name">${esc(s.display_name)}</div>
+        <div class="pts ${cls(s.points)}">${signed(s.points)}</div>
+      </div>`;
+    }).join('');
+  } catch (err) {
+    board.innerHTML = '';
+    show(msg, err.message);
+  }
+}
+
+document.getElementById('tabs').onclick = (e) => {
+  const win = e.target.dataset?.w;
+  if (win && win !== current) load(win);
+};
+
+boot().then(() => load('week')).catch(() => {});
+</script>
+</body>
+</html>

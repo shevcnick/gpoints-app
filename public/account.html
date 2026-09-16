@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>G Points — Your account</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div class="wrap">
+  <h1>👤 Your account</h1>
+  <p class="sub" id="sub">Loading…</p>
+
+  <div id="msg" class="msg"></div>
+
+  <h2>Standing</h2>
+  <div class="card"><div class="stats" id="stats"></div></div>
+
+  <h2>Profile</h2>
+  <form id="profile" class="card">
+    <label for="display">Display name</label>
+    <input id="display" maxlength="30" required>
+    <label for="emoji">Avatar</label>
+    <input id="emoji" maxlength="8" placeholder="🙂">
+    <button type="submit">Save profile</button>
+  </form>
+
+  <h2>Password</h2>
+  <form id="pwForm" class="card">
+    <label for="cur">Current password</label>
+    <input id="cur" type="password" autocomplete="current-password" required>
+    <label for="nw">New password</label>
+    <input id="nw" type="password" autocomplete="new-password" required>
+    <button type="submit" class="ghost">Change password</button>
+  </form>
+
+  <h2>Your history</h2>
+  <div id="activity"></div>
+
+  <button id="logout" class="danger">Log out</button>
+  <p class="note" style="text-align:center">
+    <a href="/hall-of-fame">🏛️ Hall of Fame</a>
+  </p>
+</div>
+<script src="/app.js"></script>
+<script>
+const msg = document.getElementById('msg');
+
+async function load() {
+  const d = await api('/me');
+  sub.textContent = `@${d.user.username} · season ${d.season} · ${d.votesCast} votes cast`;
+  display.value = d.user.display_name;
+  emoji.value = d.user.avatar_emoji;
+
+  const t = d.totals;
+  stats.innerHTML = [
+    ['Week', t.week], ['Month', t.month], ['Year', t.year], ['All time', t.all_time],
+  ].map(([label, v]) =>
+    `<div class="stat"><b class="${cls(v)}">${signed(v)}</b><span>${label}</span></div>`).join('');
+
+  activity.innerHTML = d.activity.length
+    ? d.activity.map((a) => {
+        const sign = a.kind === 'award' ? '+' : '−';
+        const who = a.about_me ? 'about you' : `you → ${esc(a.target_name)}`;
+        const colour = a.status === 'approved' ? (a.kind === 'award' ? 'pos' : 'neg') : '';
+        return `<div class="card prop">
+          <div class="head">
+            <span class="amt ${colour}">${sign}${num(a.amount)} G</span>
+            <span>${who}</span>
+            <span class="pill ${a.status}">${a.status === 'open' ? 'pending' : a.status}</span>
+          </div>
+          <p class="why">“${esc(a.reason)}”</p>
+          <p class="meta">${a.i_proposed ? 'you proposed' : 'proposed by ' + esc(a.proposer_name)}
+             · ${ago(a.resolved_at || a.created_at)}</p>
+        </div>`;
+      }).join('')
+    : '<div class="empty">Nothing yet.</div>';
+}
+
+document.getElementById('profile').onsubmit = async (e) => {
+  e.preventDefault();
+  clear(msg);
+  try {
+    await api('/me', { method: 'PATCH', body: { displayName: display.value, avatarEmoji: emoji.value } });
+    show(msg, 'Profile saved.', 'ok');
+    load();
+  } catch (err) { show(msg, err.message); }
+};
+
+document.getElementById('pwForm').onsubmit = async (e) => {
+  e.preventDefault();
+  clear(msg);
+  try {
+    await api('/me/password', { method: 'POST', body: { currentPassword: cur.value, newPassword: nw.value } });
+    show(msg, 'Password changed.', 'ok');
+    cur.value = ''; nw.value = '';
+  } catch (err) { show(msg, err.message); }
+};
+
+document.getElementById('logout').onclick = async () => {
+  await api('/auth/logout', { method: 'POST' }).catch(() => {});
+  location.href = '/login';
+};
+
+boot().then(load).catch((err) => show(msg, err.message));
+</script>
+</body>
+</html>

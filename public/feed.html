@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>G Points — Feed</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div class="wrap">
+  <h1>📜 Feed</h1>
+  <p class="sub">Everything that has been settled this season.</p>
+  <div id="msg" class="msg"></div>
+  <div id="list"><div class="empty">Loading…</div></div>
+</div>
+<script src="/app.js"></script>
+<script>
+const list = document.getElementById('list');
+const msg = document.getElementById('msg');
+
+boot().then(async () => {
+  try {
+    const { proposals } = await api('/proposals?status=resolved');
+    if (!proposals.length) {
+      list.innerHTML = '<div class="empty">Nothing settled yet.</div>';
+      return;
+    }
+    list.innerHTML = proposals.map((p) => {
+      const applied = p.status === 'approved';
+      const sign = p.kind === 'award' ? '+' : '−';
+      // Only approved proposals moved anyone's total, so only those get a colour.
+      const colour = !applied ? '' : p.kind === 'award' ? 'pos' : 'neg';
+      return `<div class="card prop">
+        <div class="head">
+          <span class="amt ${colour}">${sign}${num(p.amount)} G</span>
+          <span>→ ${esc(p.target_emoji)} <b>${esc(p.target_name)}</b></span>
+          <span class="pill ${p.status}">${p.status}</span>
+        </div>
+        <p class="why">“${esc(p.reason)}”</p>
+        <p class="meta">by ${esc(p.proposer_name)} · ${p.accepts} accepted${
+          p.rejects ? `, ${p.rejects} rejected` : ''} · ${ago(p.resolved_at)}</p>
+      </div>`;
+    }).join('');
+  } catch (err) {
+    list.innerHTML = '';
+    show(msg, err.message);
+  }
+}).catch(() => {});
+</script>
+</body>
+</html>

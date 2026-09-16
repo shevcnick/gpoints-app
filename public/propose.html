@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>G Points — Propose</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div class="wrap">
+  <h1>➕ Propose points</h1>
+  <p class="sub" id="sub">Loading…</p>
+
+  <div id="msg" class="msg"></div>
+
+  <form id="form" class="card">
+    <label for="target">User receiving</label>
+    <select id="target" required><option value="">Loading…</option></select>
+
+    <label>Award or deduct</label>
+    <div class="row">
+      <button type="button" id="award" class="ghost">👍 Award</button>
+      <button type="button" id="deduct" class="ghost">👎 Deduct</button>
+    </div>
+
+    <label for="amount">How many</label>
+    <input id="amount" type="number" min="1" max="100000" step="1" inputmode="numeric"
+           placeholder="1 – 100,000" required>
+
+    <label for="reason">Why</label>
+    <textarea id="reason" maxlength="280" placeholder="Make the case. Everyone sees this." required></textarea>
+
+    <button type="submit" id="submit">Send for approval</button>
+  </form>
+</div>
+<script src="/app.js"></script>
+<script>
+const msg = document.getElementById('msg');
+const sub = document.getElementById('sub');
+let kind = 'award';
+
+function setKind(next) {
+  kind = next;
+  award.classList.toggle('ghost', next !== 'award');
+  deduct.classList.toggle('ghost', next !== 'deduct');
+  award.style.background = next === 'award' ? 'var(--green)' : '';
+  deduct.style.background = next === 'deduct' ? 'var(--red)' : '';
+  deduct.style.color = next === 'deduct' ? '#fff' : '';
+}
+award.onclick = () => setKind('award');
+deduct.onclick = () => setKind('deduct');
+
+document.getElementById('form').onsubmit = async (e) => {
+  e.preventDefault();
+  clear(msg);
+  submit.disabled = true;
+  try {
+    const { votesRequired } = await api('/proposals', {
+      method: 'POST',
+      body: { targetId: Number(target.value), kind, amount: Number(amount.value), reason: reason.value },
+    });
+    show(msg, `Sent. It needs ${votesRequired} neutral friends to accept it.`, 'ok');
+    amount.value = ''; reason.value = ''; target.value = '';
+    setKind('award');
+  } catch (err) {
+    show(msg, err.message);
+  } finally {
+    submit.disabled = false;
+  }
+};
+
+boot().then(async () => {
+  setKind('award');
+  const [{ users }, { votesRequired }] = await Promise.all([
+    api('/me/others'),
+    api('/proposals?status=open'),
+  ]);
+  sub.textContent = `${votesRequired} neutral friends must accept. You and the receiver don't get a vote.`;
+  if (!users.length) {
+    target.innerHTML = '<option value="">Nobody else has signed up yet</option>';
+    submit.disabled = true;
+    return;
+  }
+  target.innerHTML = '<option value="">Pick someone…</option>' +
+    users.map((u) => `<option value="${u.id}">${esc(u.avatar_emoji)} ${esc(u.display_name)}</option>`).join('');
+}).catch(() => {});
+</script>
+</body>
+</html>

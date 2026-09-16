@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>G Points — Vote</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div class="wrap">
+  <h1>🗳️ Open votes</h1>
+  <p class="sub" id="sub">Loading…</p>
+  <div id="msg" class="msg"></div>
+  <div id="list"><div class="empty">Loading…</div></div>
+</div>
+<script src="/app.js"></script>
+<script>
+const list = document.getElementById('list');
+const sub = document.getElementById('sub');
+const msg = document.getElementById('msg');
+
+function pips(count, needed, kind) {
+  return Array.from({ length: needed }, (_, i) =>
+    `<div class="pip ${i < count ? kind : ''}"></div>`).join('');
+}
+
+function card(p, needed) {
+  const sign = p.kind === 'award' ? '+' : '−';
+  const colour = p.kind === 'award' ? 'pos' : 'neg';
+  const buttons = p.blocked
+    ? `<p class="note">No vote for you here — ${esc(p.blocked)}.</p>`
+    : `<div class="votes">
+         <button class="yes" data-id="${p.id}" data-vote="accept">Accept</button>
+         <button class="no"  data-id="${p.id}" data-vote="reject">Reject</button>
+       </div>`;
+
+  return `<div class="card prop">
+    <div class="head">
+      <span class="amt ${colour}">${sign}${num(p.amount)} G</span>
+      <span>→ ${esc(p.target_emoji)} <b>${esc(p.target_name)}</b></span>
+    </div>
+    <p class="why">“${esc(p.reason)}”</p>
+    <p class="meta">proposed by ${esc(p.proposer_name)} · ${ago(p.created_at)}
+       · ${until(p.expires_at)}</p>
+    <div class="tally">${pips(p.accepts, needed, 'on')}</div>
+    <p class="meta">${p.accepts}/${needed} accepted${p.rejects ? ` · ${p.rejects} rejected` : ''}</p>
+    ${buttons}
+  </div>`;
+}
+
+// keepMessage: after a vote the list is redrawn, but the confirmation of what just
+// happened has to survive that redraw.
+async function load(keepMessage) {
+  if (!keepMessage) clear(msg);
+  try {
+    const { proposals, votesRequired } = await api('/proposals?status=open');
+    const mine = proposals.filter((p) => !p.blocked).length;
+    sub.textContent = proposals.length
+      ? `${proposals.length} open · ${mine} you can vote on · ${votesRequired} accepts carries it`
+      : 'Nothing to vote on.';
+    list.innerHTML = proposals.length
+      ? proposals.map((p) => card(p, votesRequired)).join('')
+      : '<div class="empty">All caught up. Go propose something.</div>';
+  } catch (err) {
+    list.innerHTML = '';
+    show(msg, err.message);
+  }
+}
+
+list.onclick = async (e) => {
+  const button = e.target.closest('button[data-vote]');
+  if (!button) return;
+  // Disable the whole pair so a double-tap can't fire two requests.
+  button.closest('.votes').querySelectorAll('button').forEach((b) => (b.disabled = true));
+  clear(msg);
+  try {
+    const r = await api(`/proposals/${button.dataset.id}/vote`, {
+      method: 'POST', body: { vote: button.dataset.vote },
+    });
+    const outcome = r.status === 'approved' ? 'Approved — points applied. 🎉'
+      : r.status === 'rejected' ? 'Rejected. Denied.'
+      : `Vote counted — ${r.accepts}/${r.votesRequired} accepts.`;
+    await load(true);
+    show(msg, outcome, 'ok');
+  } catch (err) {
+    await load(true);
+    show(msg, err.message);
+  }
+};
+
+boot().then(() => load()).catch(() => {});
+</script>
+</body>
+</html>

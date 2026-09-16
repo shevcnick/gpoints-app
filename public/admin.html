@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>G Points — Admin</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div class="wrap">
+  <h1>⚙️ Admin</h1>
+  <p class="sub" id="sub">Loading…</p>
+  <div id="msg" class="msg"></div>
+
+  <h2>Members</h2>
+  <div class="card" id="members"></div>
+
+  <h2>Close the season</h2>
+  <div class="card">
+    <p style="margin:0 0 12px">
+      Download the archive first. Closing freezes the final standings into the Hall of Fame,
+      kills any open votes, and starts everyone at zero. Nothing is deleted from the
+      database — old proposals stay queryable forever.
+    </p>
+    <button class="ghost" id="download">⬇️ Download archive (JSON)</button>
+    <label for="confirm">Type the season name to confirm</label>
+    <input id="confirm" placeholder="e.g. 2026">
+    <button class="danger" id="close">Close season &amp; reset to zero</button>
+  </div>
+</div>
+<script src="/app.js"></script>
+<script>
+const msg = document.getElementById('msg');
+let seasonName = '';
+
+async function load() {
+  const [{ members }, health] = await Promise.all([
+    api('/admin/members'),
+    fetch('/api/health').then((r) => r.json()),
+  ]);
+  seasonName = health.season || '';
+  const needed = Number(new URLSearchParams(location.search).get('v')) || 3;
+  sub.textContent = `Season ${seasonName} · ${members.length} members`;
+
+  // A proposal needs 3 neutral voters, so 5 members is the floor for anything to pass.
+  if (members.length < 5) {
+    show(msg, `Only ${members.length} members. Because the proposer and the receiver both sit `
+      + `out, you need at least 5 people before anything can pass. Lower VOTES_REQUIRED `
+      + `if the group is staying small.`);
+  }
+
+  document.getElementById('members').innerHTML = members.map((m) => `
+    <div class="lb">
+      <div class="emoji">${esc(m.avatar_emoji)}</div>
+      <div class="name">${esc(m.display_name)}
+        <span style="color:var(--dim);font-size:.8rem">@${esc(m.username)}${
+          m.is_admin ? ' · admin' : ''}</span></div>
+      <div class="meta" style="color:var(--dim);font-size:.78rem">
+        ${m.proposed} proposed<br>${m.votes_cast} votes</div>
+    </div>`).join('');
+}
+
+document.getElementById('download').onclick = () => { location.href = '/api/admin/export'; };
+
+document.getElementById('close').onclick = async () => {
+  clear(msg);
+  if (!confirm(`Close season ${seasonName}? Everyone goes back to zero.`)) return;
+  try {
+    const r = await api('/admin/close-season', {
+      method: 'POST', body: { confirm: document.getElementById('confirm').value.trim() },
+    });
+    show(msg, `Season ${r.closed} closed. ${r.archived} standings archived`
+      + (r.champion ? `, champion was ${r.champion.display_name} on ${r.champion.total}` : '')
+      + `. Season ${r.newSeason} has begun.`, 'ok');
+    document.getElementById('confirm').value = '';
+    load();
+  } catch (err) { show(msg, err.message); }
+};
+
+boot().then(load).catch((err) => show(msg, err.message));
+</script>
+</body>
+</html>

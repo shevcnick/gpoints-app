@@ -1,0 +1,24 @@
+{
+  "name": "gpoints-app",
+  "version": "1.0.0",
+  "description": "Award and deduct G points, three friends must agree.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "db:setup": "node scripts/setup-db.cjs",
+    "db:reset": "node scripts/setup-db.cjs --seed",
+    "test": "node scripts/test.cjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "bcryptjs": "^3.0.3",
+    "cookie-parser": "^1.4.7",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "pg": "^8.23.0"
+  }
+}

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>G Points — Hall of Fame</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div class="wrap">
+  <h1>🏛️ Hall of Fame</h1>
+  <p class="sub">Final standings from every closed season. Frozen forever.</p>
+  <div id="msg" class="msg"></div>
+  <div id="list"><div class="empty">Loading…</div></div>
+</div>
+<script src="/app.js"></script>
+<script>
+const list = document.getElementById('list');
+const msg = document.getElementById('msg');
+
+boot().then(async () => {
+  try {
+    const { seasons } = await api('/seasons');
+    if (!seasons.length) {
+      list.innerHTML = '<div class="empty">No seasons have been closed yet.<br>' +
+        'The current one is still running.</div>';
+      return;
+    }
+    list.innerHTML = seasons.map((s) => `
+      <h2>Season ${esc(s.name)}</h2>
+      <div class="card">${s.standings.map((p) => `
+        <div class="lb${p.rank === 1 ? ' top1' : ''}">
+          <div class="rank">${p.rank === 1 ? '👑' : p.rank}</div>
+          <div class="emoji">${esc(p.avatar_emoji)}</div>
+          <div class="name">${esc(p.display_name)}</div>
+          <div class="pts ${cls(p.total)}">${signed(p.total)}</div>
+        </div>`).join('')}</div>
+      <p class="meta" style="color:var(--dim);font-size:.8rem">
+        closed ${new Date(s.closed_at).toLocaleDateString()}</p>`).join('');
+  } catch (err) {
+    list.innerHTML = '';
+    show(msg, err.message);
+  }
+}).catch(() => {});
+</script>
+</body>
+</html>

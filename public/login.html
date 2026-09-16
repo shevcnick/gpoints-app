@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>G Points — Login</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div class="wrap">
+
+  <!-- Top of the login, exactly as specified. -->
+  <div class="banner">
+    ⚠️ DO NOT WRITE YOUR ACTUAL PASSWORD<br>NOT ENCRYPTED — NICK WILL SEE ALL 🙂
+  </div>
+
+  <h1>G Points</h1>
+  <p class="sub">Award them. Deduct them. Argue about them.</p>
+
+  <div class="tabs">
+    <button id="tabLogin" class="active">Log in</button>
+    <button id="tabSignup">Sign up</button>
+  </div>
+
+  <div id="msg" class="msg"></div>
+
+  <form id="loginForm" class="card">
+    <label for="lu">Username</label>
+    <input id="lu" autocomplete="username" autocapitalize="none" required>
+    <label for="lp">Password</label>
+    <input id="lp" type="password" autocomplete="current-password" required>
+    <button type="submit">Log in</button>
+  </form>
+
+  <form id="signupForm" class="card" hidden>
+    <label for="si">Invite code</label>
+    <input id="si" placeholder="ask Nick" required>
+    <label for="su">Username</label>
+    <input id="su" placeholder="lowercase, no spaces" autocapitalize="none" required>
+    <label for="sd">Display name</label>
+    <input id="sd" placeholder="what shows on the leaderboard" required>
+    <label for="sp">Password</label>
+    <input id="sp" type="password" autocomplete="new-password" required>
+    <button type="submit">Create account</button>
+  </form>
+
+</div>
+<script src="/app.js"></script>
+<script>
+const msg = document.getElementById('msg');
+const loginForm = document.getElementById('loginForm');
+const signupForm = document.getElementById('signupForm');
+const tabLogin = document.getElementById('tabLogin');
+const tabSignup = document.getElementById('tabSignup');
+
+function pick(which) {
+  const isLogin = which === 'login';
+  loginForm.hidden = !isLogin;
+  signupForm.hidden = isLogin;
+  tabLogin.classList.toggle('active', isLogin);
+  tabSignup.classList.toggle('active', !isLogin);
+  clear(msg);
+}
+tabLogin.onclick = () => pick('login');
+tabSignup.onclick = () => pick('signup');
+
+// Already signed in? Skip straight to the board.
+api('/auth/session').then(() => { location.href = '/'; }).catch(() => {});
+
+async function submit(form, path, body) {
+  const button = form.querySelector('button');
+  button.disabled = true;
+  clear(msg);
+  try {
+    await api(path, { method: 'POST', body });
+    location.href = '/';
+  } catch (err) {
+    show(msg, err.message);
+    button.disabled = false;
+  }
+}
+
+loginForm.onsubmit = (e) => {
+  e.preventDefault();
+  submit(loginForm, '/auth/login', { username: lu.value, password: lp.value });
+};
+
+signupForm.onsubmit = (e) => {
+  e.preventDefault();
+  submit(signupForm, '/auth/signup', {
+    inviteCode: si.value, username: su.value, displayName: sd.value, password: sp.value,
+  });
+};
+</script>
+</body>
+</html>
