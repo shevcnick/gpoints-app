@@ -472,11 +472,11 @@ async function main() {
       await countRows("SELECT count(*)::int c FROM proposals WHERE status = 'open'"), 0,
       'open proposals must be retired by the close');
 
-    const fame = (await call('alice', '/seasons')).body.seasons;
-    assert.ok(fame.some((s) => s.name === season),
-      'the closed season must appear in the Hall of Fame');
-    const champion = fame.find((s) => s.name === season).standings[0];
-    assert.strictEqual(champion.rank, 1, 'the archive must be ranked');
+    const { rows: archived } = await query(
+      'SELECT rank, display_name, total FROM season_standings WHERE season_id = '
+      + '(SELECT id FROM seasons WHERE name = $1) ORDER BY rank', [season]);
+    assert.ok(archived.length > 0, 'the closed season must have frozen standings');
+    assert.strictEqual(archived[0].rank, 1, 'the archive must be ranked');
   });
 
   await check('a new proposal after the close lands in the new season', async () => {
@@ -490,6 +490,205 @@ async function main() {
       'only the new season may count');
   });
 
+  // ------------------------------------------------------------------ new features
+  await check('whoever claims the owner username becomes admin automatically', async () => {
+    const r = await call('owner', '/auth/signup', {
+      method: 'POST',
+      body: {
+        inviteCode: process.env.INVITE_CODE, username: 'nick',
+        displayName: 'Nick', password: 'test',
+      },
+    });
+    assert.strictEqual(r.status, 201, JSON.stringify(r.body));
+    assert.strictEqual(r.body.user.is_admin, true, 'nick must be admin on signup');
+    assert.strictEqual((await call('owner', '/admin/members')).status, 200,
+      'and must actually reach admin endpoints');
+  });
+
+  await check('admin can change another member display name and username', async () => {
+    const { members } = (await call('owner', '/admin/members')).body;
+    const dave = members.find((m) => m.username === 'dave');
+
+    const r = await call('owner', '/admin/users/' + dave.id, {
+      method: 'PATCH', body: { displayName: 'Big Dave', username: 'bigdave' },
+    });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    assert.strictEqual(r.body.user.display_name, 'Big Dave');
+    assert.strictEqual(r.body.user.username, 'bigdave');
+
+    assert.ok((await board('alice', 'all')).some((s) => s.display_name === 'Big Dave'),
+      'the rename must show on the leaderboard');
+    assert.strictEqual((await call('z', '/auth/login', {
+      method: 'POST', body: { username: 'bigdave', password: 'test' },
+    })).status, 200, 'the new username must log in');
+    assert.strictEqual((await call('z2', '/auth/login', {
+      method: 'POST', body: { username: 'dave', password: 'test' },
+    })).status, 401, 'the old username must stop working');
+
+    // Later tests vote as this person, so give the new name its own session.
+    await login('bigdave');
+  });
+
+  await check('admin cannot take a username that is already in use', async () => {
+    const { members } = (await call('owner', '/admin/members')).body;
+    const carol = members.find((m) => m.username === 'carol');
+    const r = await call('owner', '/admin/users/' + carol.id, {
+      method: 'PATCH', body: { username: 'alice' },
+    });
+    assert.strictEqual(r.status, 409, 'expected 409, got ' + r.status);
+  });
+
+  await check('non-admins cannot edit anyone', async () => {
+    const { members } = (await call('owner', '/admin/members')).body;
+    const r = await call('carol', '/admin/users/' + members[0].id, {
+      method: 'PATCH', body: { displayName: 'Hacked' },
+    });
+    assert.strictEqual(r.status, 403);
+  });
+
+  await check('reversing an approved transaction takes the points back off', async () => {
+    const p = (await propose('alice', {
+      targetId: ids.Frank, kind: 'award', amount: 250, reason: 'to be undone',
+    })).body.id;
+    await vote('carol', p, 'accept');
+    await vote('erin', p, 'accept');
+    const approved = await vote('bigdave', p, 'accept');
+    assert.strictEqual(approved.body.status, 'approved');
+
+    const before = await pointsOf('alice', 'Frank', 'all');
+
+    const noReason = await call('owner', '/admin/proposals/' + p + '/reverse', {
+      method: 'POST', body: { reason: '  ' },
+    });
+    assert.strictEqual(noReason.status, 400, 'a reason must be required');
+
+    const r = await call('owner', '/admin/proposals/' + p + '/reverse', {
+      method: 'POST', body: { reason: 'awarded by mistake' },
+    });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    assert.strictEqual(await pointsOf('alice', 'Frank', 'all'), before - 250,
+      'the points must come back off');
+
+    // Reversed, not deleted.
+    const { rows } = await query(
+      'SELECT status, reverse_reason FROM proposals WHERE id = $1', [p]);
+    assert.strictEqual(rows[0].status, 'reversed');
+    assert.strictEqual(rows[0].reverse_reason, 'awarded by mistake');
+
+    const again = await call('owner', '/admin/proposals/' + p + '/reverse', {
+      method: 'POST', body: { reason: 'twice' },
+    });
+    assert.strictEqual(again.status, 409, 'must not reverse the same thing twice');
+  });
+
+  await check('only approved proposals can be reversed', async () => {
+    const p = (await propose('alice', {
+      targetId: ids.Bob, kind: 'award', amount: 5, reason: 'still open',
+    })).body.id;
+    const r = await call('owner', '/admin/proposals/' + p + '/reverse', {
+      method: 'POST', body: { reason: 'nope' },
+    });
+    assert.strictEqual(r.status, 409);
+  });
+
+  await check('non-admins cannot reverse anything', async () => {
+    const { entries } = (await call('owner', '/admin/ledger')).body;
+    const approved = entries.find((e) => e.status === 'approved');
+    const r = await call('carol', '/admin/proposals/' + approved.id + '/reverse', {
+      method: 'POST', body: { reason: 'let me' },
+    });
+    assert.strictEqual(r.status, 403);
+  });
+
+  await check('the current period reports a Sunday-midnight week boundary', async () => {
+    const r = await call('alice', '/seasons/current');
+    assert.strictEqual(r.status, 200);
+    const { week, month, year, timezone } = r.body;
+    assert.ok(week.number >= 1, 'week number must be 1 or more');
+
+    const tz = timezone;
+    const endsAt = new Date(week.endsAt);
+    const local = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz, weekday: 'short', hour: 'numeric', minute: 'numeric', hour12: false,
+    }).formatToParts(endsAt);
+    const get = (t) => local.find((p) => p.type === t).value;
+    assert.strictEqual(get('weekday'), 'Sun', 'the week must end on a Sunday');
+    assert.strictEqual(Number(get('hour')) % 24, 0, 'at 12:00 AM');
+    assert.strictEqual(Number(get('minute')), 0, 'on the hour');
+
+    assert.ok(new Date(week.endsAt) > new Date(), 'the week end must be in the future');
+    assert.ok(new Date(month.endsAt) > new Date(), 'the month end must be in the future');
+    assert.ok(year.name.match(/^\d{4}$/), 'the year needs a name');
+  });
+
+  await check('the hall of fame reports week, month and year winners', async () => {
+    const r = await call('alice', '/seasons');
+    assert.strictEqual(r.status, 200);
+    for (const key of ['weeks', 'months', 'years', 'current', 'timezone']) {
+      assert.ok(key in r.body, 'hall of fame missing ' + key);
+    }
+    assert.ok(Array.isArray(r.body.weeks), 'weeks must be a list');
+
+    // The period in progress must never be declared won.
+    const currentWeekStart = new Date(r.body.current.week.startsAt).getTime();
+    for (const w of r.body.weeks) {
+      assert.ok(new Date(w.startsAt).getTime() < currentWeekStart,
+        'an unfinished week must not appear as a winner');
+    }
+  });
+
+  await check('a finished week produces a winner labelled Week N', async () => {
+    // A real season starts on Jan 1, so weeks are numbered from there. Move the season
+    // start back to match, otherwise a backdated award lands before the season began.
+    await query(
+      "UPDATE seasons SET started_at = date_trunc('year', now()) WHERE closed_at IS NULL");
+
+    // Backdate an approved award into a previous week.
+    const p = (await propose('alice', {
+      targetId: ids.Erin, kind: 'award', amount: 4242, reason: 'last week hero',
+    })).body.id;
+    await vote('carol', p, 'accept');
+    await vote('bigdave', p, 'accept');
+    await vote('frank', p, 'accept');
+    await query(
+      "UPDATE proposals SET resolved_at = now() - interval '10 days' WHERE id = $1", [p]);
+
+    const { weeks } = (await call('alice', '/seasons')).body;
+    const win = weeks.find((w) => w.display_name === 'Erin' && w.total >= 4242);
+    assert.ok(win, 'Erin should be G of the Week for the backdated week');
+    assert.match(win.label, /^Week \d+$/, 'label must read "Week N", got ' + win.label);
+  });
+
+  await check('reversed points do not count toward anything', async () => {
+    // An earlier test renamed bob to Bobby, so look him up by what he is called now.
+    const name = (await call('owner', '/admin/members')).body.members
+      .find((m) => m.username === 'bob').display_name;
+
+    const before = await pointsOf('alice', name, 'all');
+    const p = (await propose('alice', {
+      targetId: ids.Bob, kind: 'award', amount: 999, reason: 'will be undone',
+    })).body.id;
+    await vote('carol', p, 'accept');
+    await vote('erin', p, 'accept');
+    await vote('bigdave', p, 'accept');
+    assert.strictEqual(await pointsOf('alice', name, 'all'), before + 999);
+
+    await call('owner', '/admin/proposals/' + p + '/reverse', {
+      method: 'POST', body: { reason: 'undo' },
+    });
+    assert.strictEqual(await pointsOf('alice', name, 'all'), before,
+      'reversal must restore the previous total exactly');
+  });
+
+  await check('the login page no longer carries the old joke text', async () => {
+    const html = await (await fetch(base + '/login')).text();
+    assert.ok(!/NICK WILL SEE ALL/i.test(html), 'the banner must be gone');
+    assert.ok(!/DO NOT WRITE YOUR ACTUAL PASSWORD/i.test(html), 'the warning must be gone');
+    assert.ok(!/Argue about them/i.test(html), 'the subtitle must be gone');
+    assert.ok(!/<h1>\s*G Points\s*<\/h1>/i.test(html), 'the heading must be gone');
+    assert.ok(/Invite code/i.test(html), 'but the signup form must still be there');
+  });
+
   await check('the export carries the standings and every proposal', async () => {
     const res = await fetch(base + '/api/admin/export', { headers: { Cookie: jars.alice } });
     assert.strictEqual(res.status, 200);
@@ -500,12 +699,11 @@ async function main() {
     }
   });
 
-  await check('static pages are served with the banner on the login', async () => {
-    const login = await (await fetch(base + '/login')).text();
-    assert.match(login, /DO NOT WRITE YOUR ACTUAL PASSWORD/,
-      'the banner must be in the served HTML');
-    assert.strictEqual((await fetch(base + '/')).status, 200);
-    assert.strictEqual((await fetch(base + '/propose')).status, 200, 'clean URLs must work');
+  await check('every page is served and clean URLs work', async () => {
+    for (const path of ['/', '/login', '/propose', '/pending', '/feed', '/account',
+                        '/hall-of-fame', '/admin']) {
+      assert.strictEqual((await fetch(base + path)).status, 200, path + ' should serve');
+    }
   });
 
   server.close();

@@ -27,12 +27,20 @@ router.post('/signup', async (req, res, next) => {
     if (typeof password !== 'string' || password.length < 4)
       return res.status(400).json({ error: 'Password must be at least 4 characters.' });
 
+    // Whoever claims the owner's username is admin automatically, so Nick does not have
+    // to go poking at the database after signing up.
+    const owners = String(process.env.ADMIN_USERNAMES || 'nick')
+      .split(',')
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+    const isAdmin = owners.includes(uname);
+
     const { rows } = await query(
-      `INSERT INTO users (username, display_name, password_hash)
-       VALUES ($1, $2, $3)
+      `INSERT INTO users (username, display_name, password_hash, is_admin)
+       VALUES ($1, $2, $3, $4)
        ON CONFLICT (username) DO NOTHING
        RETURNING id, username, display_name, avatar_emoji, is_admin`,
-      [uname, name, await hashPassword(password)]
+      [uname, name, await hashPassword(password), isAdmin]
     );
     if (!rows[0]) return res.status(409).json({ error: 'That username is taken.' });
 

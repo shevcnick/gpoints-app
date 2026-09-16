@@ -36,10 +36,13 @@ CREATE TABLE proposals (
   amount      integer NOT NULL CHECK (amount BETWEEN 1 AND 100000),
   reason      text NOT NULL CHECK (length(trim(reason)) > 0),
   status      text NOT NULL DEFAULT 'open'
-                CHECK (status IN ('open','approved','rejected','expired')),
+                CHECK (status IN ('open','approved','rejected','expired','reversed')),
   created_at  timestamptz NOT NULL DEFAULT now(),
   expires_at  timestamptz NOT NULL DEFAULT now() + interval '7 days',
   resolved_at timestamptz,
+  reversed_at timestamptz,
+  reversed_by integer REFERENCES users(id),
+  reverse_reason text,
   CHECK (proposer_id <> target_id)
 );
 CREATE INDEX proposals_open     ON proposals (status) WHERE status = 'open';

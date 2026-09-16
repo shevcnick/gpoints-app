@@ -56,12 +56,8 @@ button.danger { background: var(--red); color: #fff; }
 .row { display: flex; gap: 8px; }
 .row > * { flex: 1; }
 
-/* ---- the joke banner ---- */
-.banner {
-  background: #4a1d1d; border: 1px solid #7a2e2e; color: #ffd9d4;
-  border-radius: var(--radius); padding: 12px 14px; margin-bottom: 20px;
-  font-weight: 650; font-size: 0.92rem; text-align: center; line-height: 1.45;
-}
+/* ---- login ---- */
+.login-top { height: 48px; }
 
 /* ---- tabs ---- */
 .tabs { display: flex; gap: 4px; background: var(--panel); border: 1px solid var(--line);
@@ -113,3 +109,43 @@ button.danger { background: var(--red); color: #fff; }
 .stat b { display: block; font-size: 1.15rem; font-variant-numeric: tabular-nums; }
 .stat span { font-size: 0.68rem; color: var(--dim); text-transform: uppercase; letter-spacing: 0.05em; }
 @media (max-width: 420px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+
+/* ---- countdown ---- */
+.countdown {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 11px 14px; margin-bottom: 12px;
+}
+.cd-label { color: var(--dim); font-size: 0.82rem; }
+.cd-clock {
+  font-variant-numeric: tabular-nums; font-weight: 700; font-size: 1.05rem;
+  letter-spacing: 0.02em; color: var(--gold);
+}
+
+/* ---- hall of fame ---- */
+.hof-tabs { margin-bottom: 14px; }
+.hof-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px;
+           border-bottom: 1px solid var(--line); }
+.hof-row:last-child { border-bottom: none; }
+.hof-row .period { width: 92px; color: var(--dim); font-size: 0.82rem; font-weight: 600; }
+.hof-row .name { flex: 1; min-width: 0; overflow: hidden;
+                 text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---- admin ---- */
+.admin-user { border-bottom: 1px solid var(--line); padding: 12px 0; }
+.admin-user:last-child { border-bottom: none; }
+.admin-user .who { display: flex; align-items: center; gap: 10px; }
+.admin-user .who .name { flex: 1; }
+.admin-user .fields { display: none; margin-top: 10px; }
+.admin-user.open .fields { display: block; }
+.admin-user input { margin-bottom: 8px; }
+.admin-user button { margin-top: 0; }
+.entry { display: flex; align-items: center; gap: 10px; padding: 11px 0;
+         border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.entry:last-child { border-bottom: none; }
+.entry .amt { font-weight: 700; font-variant-numeric: tabular-nums; min-width: 72px; }
+.entry .what { flex: 1; min-width: 140px; font-size: 0.88rem; }
+.entry .what small { color: var(--dim); display: block; font-size: 0.78rem; }
+.entry button { margin: 0; width: auto; padding: 7px 12px; font-size: 0.82rem; }
+.entry.undone { opacity: 0.55; }
+.entry.undone .amt { text-decoration: line-through; }

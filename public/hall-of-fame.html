@@ -9,34 +9,67 @@
 <body>
 <div class="wrap">
   <h1>🏛️ Hall of Fame</h1>
-  <p class="sub">Final standings from every closed season. Frozen forever.</p>
+  <p class="sub" id="sub">Loading…</p>
+
+  <div class="tabs hof-tabs" id="tabs">
+    <button data-k="weeks" class="active">G of the Week</button>
+    <button data-k="months">G of the Month</button>
+    <button data-k="years">G of the Year</button>
+  </div>
+
   <div id="msg" class="msg"></div>
-  <div id="list"><div class="empty">Loading…</div></div>
+  <div class="card" id="list"><div class="empty">Loading…</div></div>
 </div>
 <script src="/app.js"></script>
 <script>
 const list = document.getElementById('list');
+const sub = document.getElementById('sub');
 const msg = document.getElementById('msg');
+let data = null;
+let current = 'weeks';
+
+const EMPTY = {
+  weeks: 'No week has finished yet.<br>The current one ends Sunday at midnight.',
+  months: 'No month has finished yet.',
+  years: 'No year has finished yet.',
+};
+
+const RUNNING = {
+  weeks: (p) => 'Week ' + p.week.number + ' is still running',
+  months: (p) => p.month.name + ' is still running',
+  years: (p) => p.year.name + ' is still running',
+};
+
+function render(kind) {
+  current = kind;
+  document.querySelectorAll('#tabs button')
+    .forEach((b) => b.classList.toggle('active', b.dataset.k === kind));
+
+  const rows = data[kind];
+  sub.textContent = RUNNING[kind](data.current)
+    + ' · ' + rows.length + (rows.length === 1 ? ' winner so far' : ' winners so far');
+
+  list.innerHTML = rows.length
+    ? rows.map((r, i) => `
+        <div class="hof-row">
+          <div class="period">${esc(r.label)}</div>
+          <div class="rank">${i === 0 ? '👑' : '🏅'}</div>
+          <div class="emoji">${esc(r.avatar_emoji)}</div>
+          <div class="name">${esc(r.display_name)}</div>
+          <div class="pts pos">${signed(r.total)}</div>
+        </div>`).join('')
+    : `<div class="empty">${EMPTY[kind]}</div>`;
+}
+
+document.getElementById('tabs').onclick = (e) => {
+  const kind = e.target.dataset?.k;
+  if (kind && kind !== current) render(kind);
+};
 
 boot().then(async () => {
   try {
-    const { seasons } = await api('/seasons');
-    if (!seasons.length) {
-      list.innerHTML = '<div class="empty">No seasons have been closed yet.<br>' +
-        'The current one is still running.</div>';
-      return;
-    }
-    list.innerHTML = seasons.map((s) => `
-      <h2>Season ${esc(s.name)}</h2>
-      <div class="card">${s.standings.map((p) => `
-        <div class="lb${p.rank === 1 ? ' top1' : ''}">
-          <div class="rank">${p.rank === 1 ? '👑' : p.rank}</div>
-          <div class="emoji">${esc(p.avatar_emoji)}</div>
-          <div class="name">${esc(p.display_name)}</div>
-          <div class="pts ${cls(p.total)}">${signed(p.total)}</div>
-        </div>`).join('')}</div>
-      <p class="meta" style="color:var(--dim);font-size:.8rem">
-        closed ${new Date(s.closed_at).toLocaleDateString()}</p>`).join('');
+    data = await api('/seasons');
+    render('weeks');
   } catch (err) {
     list.innerHTML = '';
     show(msg, err.message);

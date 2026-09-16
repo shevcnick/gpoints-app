@@ -112,6 +112,137 @@ router.post('/close-season', async (req, res, next) => {
   }
 });
 
+const USERNAME_RE = /^[a-z0-9_]{3,20}$/;
+
+// Admin edit of someone else's identity. Display name is cosmetic; username is what they
+// log in with, so changing it locks them out of their old one — hence both are logged
+// back in the response for the admin to see what actually changed.
+router.patch('/users/:id', async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'Bad user id.' });
+
+    const { rows: existing } = await query(
+      'SELECT id, username, display_name FROM users WHERE id = $1', [id]
+    );
+    if (!existing[0]) return res.status(404).json({ error: 'No such user.' });
+
+    const updates = [];
+    const values = [];
+
+    if (req.body?.displayName !== undefined) {
+      const name = String(req.body.displayName).trim();
+      if (name.length < 1 || name.length > 30)
+        return res.status(400).json({ error: 'Display name must be 1-30 characters.' });
+      values.push(name);
+      updates.push(`display_name = $${values.length}`);
+    }
+
+    if (req.body?.username !== undefined) {
+      const uname = String(req.body.username).trim().toLowerCase();
+      if (!USERNAME_RE.test(uname))
+        return res.status(400).json({
+          error: 'Username must be 3-20 characters: lowercase letters, numbers or underscores.',
+        });
+      const { rows: clash } = await query(
+        'SELECT id FROM users WHERE username = $1 AND id <> $2', [uname, id]
+      );
+      if (clash[0]) return res.status(409).json({ error: 'That username is taken.' });
+      values.push(uname);
+      updates.push(`username = $${values.length}`);
+    }
+
+    if (req.body?.avatarEmoji !== undefined) {
+      const emoji = String(req.body.avatarEmoji).trim();
+      if ([...emoji].length < 1 || [...emoji].length > 3)
+        return res.status(400).json({ error: 'Avatar must be 1-3 characters.' });
+      values.push(emoji);
+      updates.push(`avatar_emoji = $${values.length}`);
+    }
+
+    if (!updates.length) return res.status(400).json({ error: 'Nothing to change.' });
+
+    values.push(id);
+    const { rows } = await query(
+      `UPDATE users SET ${updates.join(', ')} WHERE id = $${values.length}
+       RETURNING id, username, display_name, avatar_emoji, is_admin`,
+      values
+    );
+    res.json({ user: rows[0], was: existing[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Undo an approved proposal. The row is marked 'reversed' rather than deleted: the ledger
+// view only counts 'approved', so the points come straight off, but the history of what
+// happened and who undid it survives.
+router.post('/proposals/:id/reverse', async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'Bad proposal id.' });
+
+    const reason = String(req.body?.reason || '').trim();
+    if (!reason) return res.status(400).json({ error: 'Say why you are reversing it.' });
+    if (reason.length > 280)
+      return res.status(400).json({ error: 'Keep the reason under 280 characters.' });
+
+    const result = await tx(async (client) => {
+      const { rows } = await client.query(
+        'SELECT * FROM proposals WHERE id = $1 FOR UPDATE', [id]
+      );
+      const p = rows[0];
+      if (!p) return { code: 404, body: { error: 'No such proposal.' } };
+      if (p.status === 'reversed')
+        return { code: 409, body: { error: 'That one is already reversed.' } };
+      if (p.status !== 'approved')
+        return {
+          code: 409,
+          body: { error: `Only approved proposals can be reversed — that one is ${p.status}.` },
+        };
+
+      await client.query(
+        `UPDATE proposals
+         SET status = 'reversed', reversed_at = now(), reversed_by = $1, reverse_reason = $2
+         WHERE id = $3`,
+        [req.user.id, reason, id]
+      );
+
+      const delta = p.kind === 'award' ? -p.amount : p.amount;
+      return { code: 200, body: { id, undone: delta, target_id: p.target_id } };
+    });
+
+    res.status(result.code).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Approved proposals, newest first, so the admin can pick one to reverse.
+router.get('/ledger', async (req, res, next) => {
+  try {
+    const season = await activeSeason();
+    const { rows } = await query(
+      `SELECT p.id, p.kind, p.amount, p.reason, p.status, p.resolved_at,
+              p.reverse_reason, p.reversed_at,
+              pr.display_name AS proposer_name,
+              tg.display_name AS target_name, tg.avatar_emoji AS target_emoji,
+              rv.display_name AS reversed_by_name
+       FROM proposals p
+       JOIN users pr ON pr.id = p.proposer_id
+       JOIN users tg ON tg.id = p.target_id
+       LEFT JOIN users rv ON rv.id = p.reversed_by
+       WHERE p.season_id = $1 AND p.status IN ('approved', 'reversed')
+       ORDER BY p.resolved_at DESC
+       LIMIT 100`,
+      [season.id]
+    );
+    res.json({ entries: rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get('/members', async (req, res, next) => {
   try {
     const { rows } = await query(

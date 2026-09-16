@@ -4,8 +4,10 @@ Award and deduct G points among friends. Nobody can hand themselves points: ever
 a **proposal**, and **3 neutral friends** must accept it. Neither the person proposing nor the
 person receiving gets a vote.
 
-Leaderboards for the week, month, year and all time. On Jan 1 you archive the season and
-everyone goes back to zero, with past winners kept forever in the Hall of Fame.
+Leaderboards for the week, month, year and all time, with a live countdown to the next
+rollover. Weeks run Sunday 12:00 AM to Sunday 12:00 AM Eastern and are numbered Week 1, 2,
+3… from the start of the season. The Hall of Fame keeps G of the Week, G of the Month and
+G of the Year.
 
 ---
 
@@ -26,7 +28,7 @@ stored in `./.pglite`, no server and no password needed. Set `DATABASE_URL` and 
 to normal Postgres. Same code either way.
 
 ```bash
-npm test                  # 33 end-to-end tests
+npm test                  # 45 end-to-end tests
 ```
 
 Two things to know about the local PGlite database:
@@ -98,7 +100,7 @@ anyone. Then remove `DATABASE_URL` from `.env` again so local dev goes back to P
 | `SESSION_SECRET` | `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
 | `INVITE_CODE` | whatever you want to tell your friends |
 | `VOTES_REQUIRED` | `3` |
-| `APP_TZ` | `Europe/London` |
+| `APP_TZ` | `America/New_York` |
 | `NODE_ENV` | `production` |
 
 5. Deploy. You get a URL like `gpoints-app.vercel.app`.
@@ -106,16 +108,13 @@ anyone. Then remove `DATABASE_URL` from `.env` again so local dev goes back to P
 `NODE_ENV=production` matters: it makes the session cookie `Secure`, so it is only ever sent
 over HTTPS.
 
-### 4. Make yourself the admin
+### 4. Admin
 
-Sign up on the live site first so you become user 1, then in Neon's **SQL Editor**:
+Sign up with the username `nick` and you are admin automatically — no SQL needed. To use a
+different username, set `ADMIN_USERNAMES` in Vercel before signing up.
 
-```sql
-UPDATE users SET is_admin = true WHERE username = 'your-username';
-```
-
-Only the admin can close a season or download the archive. Refresh and an **Admin** tab
-appears in the nav.
+Admins can edit anyone's display name, username and avatar, reverse an approved
+transaction, download the archive and close the season.
 
 ### 5. Invite everyone
 
@@ -151,7 +150,8 @@ src/auth.js           bcrypt + a signed stateless cookie (no session store)
 src/routes/           auth, proposals+votes, leaderboard, account, seasons, admin
 public/               the whole frontend: plain HTML, one CSS file, no build step
 db/schema.sql         tables, constraints and the ledger view
-scripts/test.cjs      33 end-to-end tests
+src/periods.js        week/month/year boundaries in APP_TZ
+scripts/test.cjs      45 end-to-end tests
 ```
 
 **There are no stored balances anywhere.** Approved proposals *are* the ledger, so all four
@@ -164,8 +164,11 @@ proposal, inserting the vote and flipping the status all happen inside a transac
 a `SELECT ... FOR UPDATE` row. A composite primary key on `votes` makes double-voting
 impossible at the database level, not just in application code.
 
-Passwords are **bcrypt hashed**, despite what the login banner claims. The banner is a joke;
-the hashing is not. Nobody can read them, including you.
+Passwords are **bcrypt hashed** — nobody can read them, including you.
+
+**The Hall of Fame is computed, not stored.** Past winners are derived from the ledger on
+demand, so there is no scheduled job that can miss a rollover. The trade-off: reversing an
+old transaction can retroactively change who won a past week.
 
 ## Environment variables
 
@@ -175,7 +178,8 @@ the hashing is not. Nobody can read them, including you.
 | `SESSION_SECRET` | Signs the session cookie. Changing it logs everyone out. |
 | `INVITE_CODE` | Needed to sign up. Case and whitespace insensitive. |
 | `VOTES_REQUIRED` | Neutral accepts needed to carry a proposal. Default 3. |
-| `APP_TZ` | Timezone for week/month/year boundaries. |
+| `ADMIN_USERNAMES` | Whoever signs up with one of these is admin automatically. Default `nick`. |
+| `APP_TZ` | Timezone for period boundaries. Weeks end Sunday 12:00 AM here. |
 | `NODE_ENV` | Set to `production` in Vercel so cookies are `Secure`. |
 
 All of them are read **at startup**. Change one and you must restart locally, or redeploy on

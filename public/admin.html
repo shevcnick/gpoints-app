@@ -13,52 +13,136 @@
   <div id="msg" class="msg"></div>
 
   <h2>Members</h2>
+  <p class="note" style="margin-top:0">Tap someone to edit their name, username or avatar.</p>
   <div class="card" id="members"></div>
+
+  <h2>Reverse a transaction</h2>
+  <p class="note" style="margin-top:0">
+    Reversing takes the points straight back off. The record stays in the feed marked
+    reversed — nothing is deleted.
+  </p>
+  <div class="card" id="ledger"></div>
 
   <h2>Close the season</h2>
   <div class="card">
     <p style="margin:0 0 12px">
-      Download the archive first. Closing freezes the final standings into the Hall of Fame,
-      kills any open votes, and starts everyone at zero. Nothing is deleted from the
-      database — old proposals stay queryable forever.
+      Download the archive first. Closing freezes the final standings, kills any open votes,
+      and starts everyone at zero. Nothing is deleted from the database.
     </p>
     <button class="ghost" id="download">⬇️ Download archive (JSON)</button>
     <label for="confirm">Type the season name to confirm</label>
-    <input id="confirm" placeholder="e.g. 2026">
+    <input id="confirm" placeholder="e.g. 2026" autocapitalize="none">
     <button class="danger" id="close">Close season &amp; reset to zero</button>
   </div>
 </div>
 <script src="/app.js"></script>
 <script>
 const msg = document.getElementById('msg');
+const membersEl = document.getElementById('members');
+const ledgerEl = document.getElementById('ledger');
 let seasonName = '';
 
-async function load() {
-  const [{ members }, health] = await Promise.all([
-    api('/admin/members'),
-    fetch('/api/health').then((r) => r.json()),
-  ]);
-  seasonName = health.season || '';
-  const needed = Number(new URLSearchParams(location.search).get('v')) || 3;
+async function loadMembers() {
+  const { members } = await api('/admin/members');
+  seasonName = (await api('/seasons/current')).season;
   sub.textContent = `Season ${seasonName} · ${members.length} members`;
 
   // A proposal needs 3 neutral voters, so 5 members is the floor for anything to pass.
   if (members.length < 5) {
-    show(msg, `Only ${members.length} members. Because the proposer and the receiver both sit `
-      + `out, you need at least 5 people before anything can pass. Lower VOTES_REQUIRED `
+    show(msg, `Only ${members.length} members. Because the proposer and the receiver both `
+      + `sit out, you need at least 5 people before anything can pass. Lower VOTES_REQUIRED `
       + `if the group is staying small.`);
   }
 
-  document.getElementById('members').innerHTML = members.map((m) => `
-    <div class="lb">
-      <div class="emoji">${esc(m.avatar_emoji)}</div>
-      <div class="name">${esc(m.display_name)}
-        <span style="color:var(--dim);font-size:.8rem">@${esc(m.username)}${
-          m.is_admin ? ' · admin' : ''}</span></div>
-      <div class="meta" style="color:var(--dim);font-size:.78rem">
-        ${m.proposed} proposed<br>${m.votes_cast} votes</div>
+  membersEl.innerHTML = members.map((m) => `
+    <div class="admin-user" data-id="${m.id}">
+      <div class="who">
+        <span class="emoji">${esc(m.avatar_emoji)}</span>
+        <span class="name"><b>${esc(m.display_name)}</b>
+          <span style="color:var(--dim);font-size:.8rem">@${esc(m.username)}${
+            m.is_admin ? ' · admin' : ''}</span></span>
+        <span style="color:var(--dim);font-size:.75rem;text-align:right">
+          ${m.proposed} proposed<br>${m.votes_cast} votes</span>
+      </div>
+      <div class="fields">
+        <label>Display name</label>
+        <input class="f-display" value="${esc(m.display_name)}" maxlength="30">
+        <label>Username</label>
+        <input class="f-username" value="${esc(m.username)}" maxlength="20" autocapitalize="none">
+        <label>Avatar</label>
+        <input class="f-emoji" value="${esc(m.avatar_emoji)}" maxlength="8">
+        <button class="save">Save changes</button>
+      </div>
     </div>`).join('');
 }
+
+membersEl.onclick = async (e) => {
+  const row = e.target.closest('.admin-user');
+  if (!row) return;
+
+  if (e.target.closest('.who')) { row.classList.toggle('open'); return; }
+
+  if (e.target.classList.contains('save')) {
+    e.target.disabled = true;
+    clear(msg);
+    try {
+      const r = await api('/admin/users/' + row.dataset.id, {
+        method: 'PATCH',
+        body: {
+          displayName: row.querySelector('.f-display').value,
+          username: row.querySelector('.f-username').value,
+          avatarEmoji: row.querySelector('.f-emoji').value,
+        },
+      });
+      const renamed = r.was.username !== r.user.username;
+      show(msg, `Saved. ${esc(r.user.display_name)}`
+        + (renamed ? ` now logs in as @${esc(r.user.username)} — tell them, their old username no longer works.` : '.'),
+        'ok');
+      await loadMembers();
+    } catch (err) {
+      show(msg, err.message);
+      e.target.disabled = false;
+    }
+  }
+};
+
+async function loadLedger() {
+  const { entries } = await api('/admin/ledger');
+  ledgerEl.innerHTML = entries.length
+    ? entries.map((x) => {
+        const undone = x.status === 'reversed';
+        const sign = x.kind === 'award' ? '+' : '−';
+        return `<div class="entry ${undone ? 'undone' : ''}" data-id="${x.id}">
+          <span class="amt ${undone ? '' : (x.kind === 'award' ? 'pos' : 'neg')}">${sign}${num(x.amount)}</span>
+          <span class="what">${esc(x.target_emoji)} <b>${esc(x.target_name)}</b> — “${esc(x.reason)}”
+            <small>by ${esc(x.proposer_name)} · ${ago(x.resolved_at)}${
+              undone ? ` · reversed by ${esc(x.reversed_by_name || 'admin')}: “${esc(x.reverse_reason || '')}”` : ''}</small></span>
+          ${undone ? '' : '<button class="danger reverse">Reverse</button>'}
+        </div>`;
+      }).join('')
+    : '<div class="empty">No approved transactions yet.</div>';
+}
+
+ledgerEl.onclick = async (e) => {
+  if (!e.target.classList.contains('reverse')) return;
+  const row = e.target.closest('.entry');
+  const reason = prompt('Why are you reversing this? Everyone will see it.');
+  if (reason === null) return;
+  if (!reason.trim()) { show(msg, 'A reason is required to reverse.'); return; }
+
+  e.target.disabled = true;
+  clear(msg);
+  try {
+    const r = await api('/admin/proposals/' + row.dataset.id + '/reverse', {
+      method: 'POST', body: { reason },
+    });
+    show(msg, `Reversed — ${signed(r.undone)} applied to put it back.`, 'ok');
+    await loadLedger();
+  } catch (err) {
+    show(msg, err.message);
+    e.target.disabled = false;
+  }
+};
 
 document.getElementById('download').onclick = () => { location.href = '/api/admin/export'; };
 
@@ -73,11 +157,14 @@ document.getElementById('close').onclick = async () => {
       + (r.champion ? `, champion was ${r.champion.display_name} on ${r.champion.total}` : '')
       + `. Season ${r.newSeason} has begun.`, 'ok');
     document.getElementById('confirm').value = '';
-    load();
+    loadMembers();
+    loadLedger();
   } catch (err) { show(msg, err.message); }
 };
 
-boot().then(load).catch((err) => show(msg, err.message));
+boot()
+  .then(() => Promise.all([loadMembers(), loadLedger()]))
+  .catch((err) => show(msg, err.message));
 </script>
 </body>
 </html>

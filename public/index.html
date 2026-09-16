@@ -11,6 +11,11 @@
   <h1>🏆 Leaderboard</h1>
   <p class="sub" id="sub">Loading…</p>
 
+  <div class="countdown" id="countdown" hidden>
+    <span class="cd-label" id="cdLabel"></span>
+    <span class="cd-clock" id="cdClock"></span>
+  </div>
+
   <div class="tabs" id="tabs">
     <button data-w="week" class="active">Week</button>
     <button data-w="month">Month</button>
@@ -26,9 +31,49 @@
 const board = document.getElementById('board');
 const sub = document.getElementById('sub');
 const msg = document.getElementById('msg');
-let current = 'week';
+const countdown = document.getElementById('countdown');
+const cdLabel = document.getElementById('cdLabel');
+const cdClock = document.getElementById('cdClock');
 
-const LABEL = { week: 'this week', month: 'this month', year: 'this year', all: 'all time' };
+let current = 'week';
+let period = null;
+let ticker = null;
+
+// Which period each tab is counting down to. All time never ends.
+const ENDS = {
+  week: (p) => ({ at: p.week.endsAt, label: p.week.number ? 'Week ' + p.week.number + ' ends in' : 'Week ends in' }),
+  month: (p) => ({ at: p.month.endsAt, label: p.month.name + ' ends in' }),
+  year: (p) => ({ at: p.year.endsAt, label: p.year.name + ' ends in' }),
+  all: () => null,
+};
+
+function pad(n) { return String(n).padStart(2, '0'); }
+
+function tick() {
+  if (!period) return;
+  const spec = ENDS[current](period);
+  if (!spec) { countdown.hidden = true; return; }
+
+  const left = new Date(spec.at) - Date.now();
+  if (left <= 0) {
+    // The period rolled over while the page was open — reload so the board and the
+    // week number are both correct rather than silently stale.
+    cdClock.textContent = "that's time";
+    clearInterval(ticker);
+    setTimeout(() => location.reload(), 2000);
+    return;
+  }
+
+  const secs = Math.floor(left / 1000);
+  const d = Math.floor(secs / 86400);
+  const h = Math.floor((secs % 86400) / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+
+  cdLabel.textContent = spec.label;
+  cdClock.textContent = (d > 0 ? d + 'd ' : '') + pad(h) + ':' + pad(m) + ':' + pad(s);
+  countdown.hidden = false;
+}
 
 async function load(win) {
   current = win;
@@ -38,16 +83,26 @@ async function load(win) {
   clear(msg);
 
   try {
-    const { standings, season, timezone } = await api('/leaderboard?window=' + win);
-    sub.textContent = `Season ${season} · ${LABEL[win]} · times in ${timezone}`;
+    const data = await api('/leaderboard?window=' + win);
+    period = data.period;
 
-    if (!standings.length) {
+    const where = win === 'week' ? 'Week ' + period.week.number
+      : win === 'month' ? period.month.name
+      : win === 'year' ? period.year.name
+      : 'All time';
+    sub.textContent = where + ' · ' + data.timezone.replace('America/', '').replace('_', ' ');
+
+    tick();
+    clearInterval(ticker);
+    ticker = setInterval(tick, 1000);
+
+    if (!data.standings.length) {
       board.innerHTML = '<div class="empty">Nobody here yet.</div>';
       return;
     }
     // Equal scores share a rank, so three people on 0 are all joint-whatever.
     let rank = 0, lastPoints = null;
-    board.innerHTML = standings.map((s, i) => {
+    board.innerHTML = data.standings.map((s, i) => {
       if (s.points !== lastPoints) { rank = i + 1; lastPoints = s.points; }
       const top = rank === 1 && s.points > 0 ? ' top1' : '';
       return `<div class="lb${top}">
