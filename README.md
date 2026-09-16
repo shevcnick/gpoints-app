@@ -5,7 +5,7 @@ a **proposal**, and **3 neutral friends** must accept it. Neither the person pro
 person receiving gets a vote.
 
 Leaderboards for the week, month, year and all time, with a live countdown to the next
-rollover. Weeks run Sunday 12:00 AM to Sunday 12:00 AM Eastern and are numbered Week 1, 2,
+rollover. Weeks run Sunday 12:00 AM to Sunday 12:00 AM Toronto time and are numbered Week 1, 2,
 3… from the start of the season. The Hall of Fame keeps G of the Week, G of the Month and
 G of the Year.
 
@@ -100,7 +100,7 @@ anyone. Then remove `DATABASE_URL` from `.env` again so local dev goes back to P
 | `SESSION_SECRET` | `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
 | `INVITE_CODE` | whatever you want to tell your friends |
 | `VOTES_REQUIRED` | `3` |
-| `APP_TZ` | `America/New_York` |
+| `APP_TZ` | `America/Toronto` |
 | `NODE_ENV` | `production` |
 
 5. Deploy. You get a URL like `gpoints-app.vercel.app`.
@@ -179,7 +179,7 @@ old transaction can retroactively change who won a past week.
 | `INVITE_CODE` | Needed to sign up. Case and whitespace insensitive. |
 | `VOTES_REQUIRED` | Neutral accepts needed to carry a proposal. Default 3. |
 | `ADMIN_USERNAMES` | Whoever signs up with one of these is admin automatically. Default `nick`. |
-| `APP_TZ` | Timezone for period boundaries. Weeks end Sunday 12:00 AM here. |
+| `APP_TZ` | IANA timezone for period boundaries, e.g. `America/Toronto`. An invalid name falls back to Toronto with a warning rather than breaking the site. |
 | `NODE_ENV` | Set to `production` in Vercel so cookies are `Secure`. |
 
 All of them are read **at startup**. Change one and you must restart locally, or redeploy on

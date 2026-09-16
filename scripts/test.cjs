@@ -621,6 +621,26 @@ async function main() {
     assert.ok(year.name.match(/^\d{4}$/), 'the year needs a name');
   });
 
+  await check('an invalid APP_TZ falls back instead of taking the site down', async () => {
+    // A typo in the Vercel config box used to 500 every page that touched a date.
+    const P = require('../src/periods');
+    const real = process.env.APP_TZ;
+    for (const bad of ['Toronto Canada', 'Toronto', 'Canada/Toronto', 'not a zone', '']) {
+      process.env.APP_TZ = bad;
+      delete require.cache[require.resolve('../src/periods')];
+      const fresh = require('../src/periods');
+      const resolved = fresh.tz();
+      assert.doesNotThrow(() => new Intl.DateTimeFormat('en-US', { timeZone: resolved })
+        .format(new Date()), 'fallback for ' + JSON.stringify(bad) + ' must be usable');
+      assert.doesNotThrow(() => fresh.describeNow(new Date()),
+        'period maths must survive ' + JSON.stringify(bad));
+    }
+    process.env.APP_TZ = real;
+    delete require.cache[require.resolve('../src/periods')];
+    require('../src/periods');
+    void P;
+  });
+
   await check('the hall of fame reports week, month and year winners', async () => {
     const r = await call('alice', '/seasons');
     assert.strictEqual(r.status, 200);

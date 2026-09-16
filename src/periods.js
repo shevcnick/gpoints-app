@@ -7,7 +7,27 @@
 // there is no cron job to miss a rollover and no snapshot that can disagree with the
 // underlying points.
 
-const tz = () => process.env.APP_TZ || 'America/New_York';
+const DEFAULT_TZ = 'America/Toronto';
+
+// A bad APP_TZ makes every date operation throw, which takes the whole site down for a
+// typo in a config box. Validate once, warn loudly, and keep running on the default.
+let resolvedTz = null;
+function tz() {
+  if (resolvedTz) return resolvedTz;
+  const wanted = (process.env.APP_TZ || '').trim();
+  if (!wanted) return (resolvedTz = DEFAULT_TZ);
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: wanted }).format(new Date());
+    return (resolvedTz = wanted);
+  } catch {
+    console.error(
+      `APP_TZ is not a valid timezone: ${JSON.stringify(wanted)}. `
+      + `Falling back to ${DEFAULT_TZ}. It must be an IANA name like "America/Toronto" `
+      + `— the region prefix is required.`
+    );
+    return (resolvedTz = DEFAULT_TZ);
+  }
+}
 
 // SQL for the start of the week containing `ts`, as a timestamptz.
 // $tz must be bound separately by the caller.

@@ -1,12 +1,13 @@
 const router = require('express').Router();
 const { query, activeSeason } = require('../db');
 const { hashPassword, verifyPassword, setSession } = require('../auth');
+const P = require('../periods');
 
 // The account screen: profile, your own totals, and your recent activity.
 router.get('/', async (req, res, next) => {
   try {
     const season = await activeSeason();
-    const tz = process.env.APP_TZ || 'Europe/London';
+    const tz = P.tz();
 
     const { rows: totals } = await query(
       `SELECT COALESCE(SUM(delta), 0)::int AS all_time,
