@@ -1058,7 +1058,7 @@ async function main() {
     assert.match(body.data.choices[0].value, /^\d+$/, 'choices must carry the user id');
   });
 
-  await check('/propose creates a proposal in the channel it was typed in', async () => {
+  await check('/propose posts to the G Points channel, wherever it was typed', async () => {
     const posted = [];
     const realFetch = global.fetch;
     global.fetch = async (url, opts) => {
@@ -1069,10 +1069,14 @@ async function main() {
       return realFetch(url, opts);
     };
 
+    // Configured G Points channel, deliberately different from where the command is typed.
+    process.env.DISCORD_CHANNEL_ID = '111222333';
+
     const before = await countRows('SELECT count(*)::int c FROM proposals');
     const res = await fetch(base + '/api/discord/interactions', signIt({
       type: 2,
-      channel_id: '777888999',
+      channel_id: '777888999', // typed somewhere else entirely
+      guild_id: '1360419275528994916',
       data: {
         name: 'propose',
         options: [
@@ -1091,10 +1095,18 @@ async function main() {
     assert.strictEqual(body.data.flags, 64, 'the confirmation should be private');
     assert.strictEqual(await countRows('SELECT count(*)::int c FROM proposals'), before + 1);
 
-    // Posted to the channel the command came from, not the configured one.
-    assert.ok(posted.some((p) => p.url.includes('/channels/777888999/messages')),
-      'must post to the channel the command was used in');
-    const message = posted.find((p) => p.url.includes('777888999')).body;
+    // Lands in the G Points channel, not the one it was typed in.
+    assert.ok(posted.some((p) => p.url.includes('/channels/111222333/messages')),
+      'must post to the configured G Points channel');
+    assert.ok(!posted.some((p) => p.url.includes('/channels/777888999/messages')),
+      'must NOT post to the channel it was typed in');
+
+    assert.match(body.data.content, /<#111222333>/,
+      'the reply should name the channel it went to');
+    assert.match(body.data.content, /discord\.com\/channels\/1360419275528994916\/111222333\//,
+      'and include a jump link to the message');
+
+    const message = posted.find((p) => p.url.includes('111222333')).body;
     assert.ok(message.components?.[0]?.components?.length === 2,
       'the posted message must carry the two vote buttons');
 
@@ -1107,7 +1119,43 @@ async function main() {
     assert.strictEqual(rows[0].proposer, 'carol', 'attributed to the linked account');
     assert.strictEqual(rows[0].amount, 250);
     assert.strictEqual(rows[0].discord_message_id, '555999', 'message id stored for editing');
-    assert.strictEqual(rows[0].discord_channel_id, '777888999');
+    assert.strictEqual(rows[0].discord_channel_id, '111222333',
+      'the stored channel must be where it was actually posted');
+
+    delete process.env.DISCORD_CHANNEL_ID;
+  });
+
+  await check('/propose falls back to the current channel if none is configured', async () => {
+    const posted = [];
+    const realFetch = global.fetch;
+    delete process.env.DISCORD_CHANNEL_ID;
+    global.fetch = async (url, opts) => {
+      if (String(url).includes('discord.com/api/')) {
+        posted.push(String(url));
+        return { ok: true, status: 200, text: async () => JSON.stringify({ id: '556000' }) };
+      }
+      return realFetch(url, opts);
+    };
+
+    await fetch(base + '/api/discord/interactions', signIt({
+      type: 2,
+      channel_id: '777888999',
+      data: {
+        name: 'propose',
+        options: [
+          { name: 'user', value: String(ids.Bob) },
+          { name: 'type', value: 'deduct' },
+          { name: 'amount', value: 5 },
+          { name: 'why', value: 'no channel configured' },
+        ],
+      },
+      member: { user: { id: '999000111222' } },
+    }));
+    global.fetch = realFetch;
+
+    // Better to post it in the wrong place than to lose it.
+    assert.ok(posted.some((u) => u.includes('/channels/777888999/messages')),
+      'with no channel configured it must fall back to where it was typed');
   });
 
   await check('/propose enforces the same rules as the app', async () => {

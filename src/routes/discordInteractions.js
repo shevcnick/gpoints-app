@@ -191,10 +191,13 @@ async function handleCommand(interaction) {
   );
   const id = created[0].id;
 
-  // Posted to the channel the command was typed in, not the configured one — and posted
-  // via the API rather than as the interaction reply, so the message id comes back and
-  // can be stored for editing the tally later.
-  const channel = interaction.channel_id;
+  // Every proposal lands in the G Points channel wherever the command was typed, so the
+  // voting all happens in one place. Falls back to the current channel if no channel is
+  // configured, rather than losing the proposal.
+  const channel = bot.channelId() || interaction.channel_id;
+
+  // Posted via the API rather than as the interaction reply, so the message id comes
+  // back and can be stored for editing the tally later.
   const posted = await bot.postProposal({
     id, kind, amount, reason: why,
     proposerName: me[0].display_name,
@@ -204,8 +207,8 @@ async function handleCommand(interaction) {
 
   if (!posted.ok) {
     return reply(
-      'Saved the proposal, but I could not post it here. '
-      + 'Check I have permission to send messages in this channel.'
+      'Saved the proposal, but I could not post it in the G Points channel. '
+      + 'Check I have permission to send messages there.'
     );
   }
 
@@ -214,7 +217,16 @@ async function handleCommand(interaction) {
     [posted.body.id, channel, id]
   );
 
-  return reply(`Posted. ${votesRequired()} neutral friends need to accept it.`);
+  // A jump link, so whoever ran the command can follow it even from another channel.
+  const guild = interaction.guild_id;
+  const link = guild
+    ? `https://discord.com/channels/${guild}/${channel}/${posted.body.id}`
+    : null;
+
+  return reply(
+    `Posted in <#${channel}> — ${votesRequired()} neutral friends need to accept it.`
+    + (link ? `\n${link}` : '')
+  );
 }
 
 // Six characters, unambiguous alphabet (no O/0, I/1), valid for 15 minutes.
