@@ -1158,6 +1158,42 @@ async function main() {
       'with no channel configured it must fall back to where it was typed');
   });
 
+  await check('a proposal that cannot reach Discord is not left stranded', async () => {
+    const realFetch = global.fetch;
+    process.env.DISCORD_CHANNEL_ID = '111222333';
+    // The bot cannot post — wrong channel, missing permission, whatever.
+    global.fetch = async (url, opts) => {
+      if (String(url).includes('discord.com/api/')) {
+        return { ok: false, status: 403, statusText: 'Forbidden', text: async () => '{"code":50013}' };
+      }
+      return realFetch(url, opts);
+    };
+
+    const before = await countRows('SELECT count(*)::int c FROM proposals');
+    const res = await fetch(base + '/api/discord/interactions', signIt({
+      type: 2, channel_id: '777888999',
+      data: {
+        name: 'propose',
+        options: [
+          { name: 'user', value: String(ids.Bob) },
+          { name: 'type', value: 'award' },
+          { name: 'amount', value: 77 },
+          { name: 'why', value: 'will fail to post' },
+        ],
+      },
+      member: { user: { id: '999000111222' } },
+    }));
+    const body = await res.json();
+    global.fetch = realFetch;
+
+    assert.match(body.data.content, /nothing was created/i,
+      'must say the proposal was not created');
+    assert.strictEqual(await countRows('SELECT count(*)::int c FROM proposals'), before,
+      'a proposal that never reached Discord must be rolled back, not stranded');
+
+    delete process.env.DISCORD_CHANNEL_ID;
+  });
+
   await check('/propose enforces the same rules as the app', async () => {
     const send = (options, who = '999000111222') =>
       fetch(base + '/api/discord/interactions', signIt({

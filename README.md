@@ -28,7 +28,7 @@ stored in `./.pglite`, no server and no password needed. Set `DATABASE_URL` and 
 to normal Postgres. Same code either way.
 
 ```bash
-npm test                  # 63 end-to-end tests
+npm test                  # 64 end-to-end tests
 ```
 
 Two things to know about the local PGlite database:
@@ -158,7 +158,7 @@ src/periods.js        week/month/year boundaries in APP_TZ
 src/discord.js        optional Discord webhook notifications
 src/discordBot.js     Discord application: buttons, and verifying clicks
 src/voting.js         the voting rules, shared by the app and Discord
-scripts/test.cjs      63 end-to-end tests
+scripts/test.cjs      64 end-to-end tests
 ```
 
 **There are no stored balances anywhere.** Approved proposals *are* the ledger, so all four

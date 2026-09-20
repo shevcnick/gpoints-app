@@ -70,6 +70,14 @@ router.post('/', async (req, res, next) => {
       if (posted.ok && posted.body?.id) {
         await query('UPDATE proposals SET discord_message_id = $1 WHERE id = $2',
           [posted.body.id, id]);
+      } else if (!bot.appVotingEnabled()) {
+        // Voting only happens in Discord, so a proposal that never reached Discord can
+        // never be voted on. Undo it and say so, rather than stranding it.
+        await query('DELETE FROM proposals WHERE id = $1', [id]);
+        return res.status(502).json({
+          error: 'Could not post this to Discord, so it was not created. '
+            + 'The bot may be missing permission to post in the G Points channel.',
+        });
       }
     } else {
       await discord.proposalOpened({

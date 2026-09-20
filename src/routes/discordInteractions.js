@@ -206,9 +206,13 @@ async function handleCommand(interaction) {
   }, channel);
 
   if (!posted.ok) {
+    // With voting in Discord, a proposal nobody can see is a proposal nobody can vote
+    // on. Undo it rather than leaving it stranded in the database.
+    await query('DELETE FROM proposals WHERE id = $1', [id]);
     return reply(
-      'Saved the proposal, but I could not post it in the G Points channel. '
-      + 'Check I have permission to send messages there.'
+      'Could not post that in the G Points channel, so nothing was created.\n'
+      + 'The bot needs **Send Messages** and **Embed Links** there — check the channel '
+      + 'permissions, or that DISCORD_CHANNEL_ID points at a real text channel.'
     );
   }
 
