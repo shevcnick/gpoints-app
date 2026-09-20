@@ -64,7 +64,9 @@ function fromEnvFile(name) {
       + '\nPass your server id to register instantly there instead:'
       + '\n  npm run discord:register -- <serverId>'
   );
-  process.exit(0);
+  // No process.exit here: forcing exit while sockets are still closing makes libuv
+  // print an assertion failure on Windows. Nothing is holding the loop open, so it
+  // ends on its own.
 })().catch((err) => {
   console.error('FAILED: ' + err.message);
   process.exit(1);
