@@ -760,6 +760,33 @@ async function main() {
     global.fetch = realFetch;
   });
 
+  await check('discord is notified BEFORE the response, not after', async () => {
+    // On Vercel the function stops executing the moment a response is sent, so a
+    // notification fired afterwards is aborted mid-flight and never arrives. The only
+    // way to be sure it went is that the webhook completed before the client saw 201.
+    const realFetch = global.fetch;
+    let webhookDone = false;
+    process.env.DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/1/token';
+    global.fetch = async (url, opts) => {
+      if (String(url).includes('discord.com')) {
+        await new Promise((r) => setTimeout(r, 60));
+        webhookDone = true;
+        return { ok: true, status: 204 };
+      }
+      return realFetch(url, opts);
+    };
+
+    const r = await propose('alice', {
+      targetId: ids.Carol, kind: 'award', amount: 3, reason: 'ordering check',
+    });
+    assert.strictEqual(r.status, 201);
+    assert.ok(webhookDone,
+      'the webhook must have completed before the response was returned');
+
+    delete process.env.DISCORD_WEBHOOK_URL;
+    global.fetch = realFetch;
+  });
+
   await check('voting still works when discord is broken', async () => {
     const realFetch = global.fetch;
     process.env.DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/1/token';

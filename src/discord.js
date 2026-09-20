@@ -5,7 +5,10 @@
 // Two rules hold throughout: a Discord problem must never fail a request that already
 // succeeded, and text written by users must never be able to ping the server.
 
-const TIMEOUT_MS = 3000;
+// Kept tight because the caller waits for it. On Vercel the function is frozen the
+// moment the response is sent, so a notification fired afterwards is aborted mid-flight
+// and never arrives — the request has to complete before we respond.
+const TIMEOUT_MS = 2500;
 
 const url = () => (process.env.DISCORD_WEBHOOK_URL || '').trim();
 const enabled = () => /^https:\/\/discord(app)?\.com\/api\/webhooks\//.test(url());

@@ -55,16 +55,17 @@ router.post('/', async (req, res, next) => {
        VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
       [season.id, req.user.id, target, kind, amt, why]
     );
-    res.status(201).json({ id: rows[0].id, votesRequired: votesRequired() });
-
-    // After the response, so a slow or broken Discord never delays the proposer. The
-    // proposal is already saved, so a missed notification is the worst case.
-    discord.proposalOpened({
+    // Before the response: on serverless the function stops executing once a response
+    // is sent, so anything fired afterwards is killed. proposalOpened never throws and
+    // times out quickly, so the worst case is a slightly slower reply, not a failure.
+    await discord.proposalOpened({
       kind, amount: amt, reason: why,
       proposerName: req.user.display_name,
       targetName: targetRows[0].display_name,
       votesRequired: votesRequired(),
     });
+
+    res.status(201).json({ id: rows[0].id, votesRequired: votesRequired() });
   } catch (err) {
     next(err);
   }
@@ -173,18 +174,20 @@ router.post('/:id/vote', async (req, res, next) => {
       };
     });
 
-    res.status(result.code).json(result.body);
-
+    // Announced after the transaction commits but before the response, for the same
+    // reason as above: work started after res.json() does not survive on serverless.
     if (result.resolved) {
       const p = result.resolved;
       const { rows } = await query('SELECT display_name FROM users WHERE id = $1',
         [p.target_id]);
-      discord.proposalResolved({
+      await discord.proposalResolved({
         kind: p.kind, amount: p.amount, reason: p.reason,
         targetName: rows[0]?.display_name || 'someone',
         status: p.status, accepts: p.accepts, rejects: p.rejects,
       });
     }
+
+    res.status(result.code).json(result.body);
   } catch (err) {
     next(err);
   }

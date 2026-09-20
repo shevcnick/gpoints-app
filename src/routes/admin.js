@@ -213,18 +213,19 @@ router.post('/proposals/:id/reverse', async (req, res, next) => {
       return { code: 200, body: { id, undone: delta, target_id: p.target_id }, reversed: p };
     });
 
-    res.status(result.code).json(result.body);
-
+    // Before the response: on serverless nothing runs after res.json().
     if (result.reversed) {
       const p = result.reversed;
-      const { rows } = await query('SELECT display_name FROM users WHERE id = ',
+      const { rows } = await query('SELECT display_name FROM users WHERE id = $1',
         [p.target_id]);
-      discord.proposalReversed({
+      await discord.proposalReversed({
         kind: p.kind, amount: p.amount, reason: p.reason,
         targetName: rows[0]?.display_name || 'someone',
         adminName: req.user.display_name, reverseReason: reason,
       });
     }
+
+    res.status(result.code).json(result.body);
   } catch (err) {
     next(err);
   }
