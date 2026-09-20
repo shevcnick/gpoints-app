@@ -1,5 +1,6 @@
 const router = require('express').Router();
 const { query, tx, activeSeason } = require('../db');
+const discord = require('../discord');
 
 const STANDINGS_SQL = `
   SELECT u.id AS user_id, u.display_name, u.avatar_emoji,
@@ -209,10 +210,21 @@ router.post('/proposals/:id/reverse', async (req, res, next) => {
       );
 
       const delta = p.kind === 'award' ? -p.amount : p.amount;
-      return { code: 200, body: { id, undone: delta, target_id: p.target_id } };
+      return { code: 200, body: { id, undone: delta, target_id: p.target_id }, reversed: p };
     });
 
     res.status(result.code).json(result.body);
+
+    if (result.reversed) {
+      const p = result.reversed;
+      const { rows } = await query('SELECT display_name FROM users WHERE id = ',
+        [p.target_id]);
+      discord.proposalReversed({
+        kind: p.kind, amount: p.amount, reason: p.reason,
+        targetName: rows[0]?.display_name || 'someone',
+        adminName: req.user.display_name, reverseReason: reason,
+      });
+    }
   } catch (err) {
     next(err);
   }

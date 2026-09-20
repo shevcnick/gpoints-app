@@ -1,5 +1,6 @@
 const router = require('express').Router();
 const { query, tx, activeSeason } = require('../db');
+const discord = require('../discord');
 
 const MAX_AMOUNT = 100000;
 const votesRequired = () => Number(process.env.VOTES_REQUIRED) || 3;
@@ -43,7 +44,9 @@ router.post('/', async (req, res, next) => {
     if (!why) return res.status(400).json({ error: 'You have to say why.' });
     if (why.length > 280) return res.status(400).json({ error: 'Keep the reason under 280 characters.' });
 
-    const { rows: targetRows } = await query('SELECT id FROM users WHERE id = $1', [target]);
+    const { rows: targetRows } = await query(
+      'SELECT id, display_name FROM users WHERE id = $1', [target]
+    );
     if (!targetRows[0]) return res.status(400).json({ error: 'That person does not exist.' });
 
     const season = await activeSeason();
@@ -53,6 +56,15 @@ router.post('/', async (req, res, next) => {
       [season.id, req.user.id, target, kind, amt, why]
     );
     res.status(201).json({ id: rows[0].id, votesRequired: votesRequired() });
+
+    // After the response, so a slow or broken Discord never delays the proposer. The
+    // proposal is already saved, so a missed notification is the worst case.
+    discord.proposalOpened({
+      kind, amount: amt, reason: why,
+      proposerName: req.user.display_name,
+      targetName: targetRows[0].display_name,
+      votesRequired: votesRequired(),
+    });
   } catch (err) {
     next(err);
   }
@@ -152,10 +164,27 @@ router.post('/:id/vote', async (req, res, next) => {
           [status, id]
         );
       }
-      return { code: 200, body: { status, accepts, rejects, votesRequired: needed } };
+      return {
+        code: 200,
+        body: { status, accepts, rejects, votesRequired: needed },
+        // Carried out of the transaction so the announcement happens after commit —
+        // never announce points that might still roll back.
+        resolved: status !== 'open' ? { ...p, status, accepts, rejects } : null,
+      };
     });
 
     res.status(result.code).json(result.body);
+
+    if (result.resolved) {
+      const p = result.resolved;
+      const { rows } = await query('SELECT display_name FROM users WHERE id = $1',
+        [p.target_id]);
+      discord.proposalResolved({
+        kind: p.kind, amount: p.amount, reason: p.reason,
+        targetName: rows[0]?.display_name || 'someone',
+        status: p.status, accepts: p.accepts, rejects: p.rejects,
+      });
+    }
   } catch (err) {
     next(err);
   }

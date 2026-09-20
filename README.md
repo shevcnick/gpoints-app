@@ -28,7 +28,7 @@ stored in `./.pglite`, no server and no password needed. Set `DATABASE_URL` and 
 to normal Postgres. Same code either way.
 
 ```bash
-npm test                  # 45 end-to-end tests
+npm test                  # 48 end-to-end tests
 ```
 
 Two things to know about the local PGlite database:
@@ -151,7 +151,8 @@ src/routes/           auth, proposals+votes, leaderboard, account, seasons, admi
 public/               the whole frontend: plain HTML, one CSS file, no build step
 db/schema.sql         tables, constraints and the ledger view
 src/periods.js        week/month/year boundaries in APP_TZ
-scripts/test.cjs      45 end-to-end tests
+src/discord.js        optional Discord webhook notifications
+scripts/test.cjs      48 end-to-end tests
 ```
 
 **There are no stored balances anywhere.** Approved proposals *are* the ledger, so all four
@@ -181,6 +182,8 @@ old transaction can retroactively change who won a past week.
 | `ADMIN_USERNAMES` | Whoever signs up with one of these is admin automatically. Default `nick`. |
 | `APP_TZ` | IANA timezone for period boundaries, e.g. `America/Toronto`. An invalid name falls back to Toronto with a warning rather than breaking the site. |
 | `NODE_ENV` | Set to `production` in Vercel so cookies are `Secure`. |
+| `DISCORD_WEBHOOK_URL` | Optional. Posts to Discord when a proposal opens, lands or is reversed. |
+| `APP_URL` | Optional. Your live URL, so Discord messages link to the voting page. |
 
 All of them are read **at startup**. Change one and you must restart locally, or redeploy on
 Vercel.

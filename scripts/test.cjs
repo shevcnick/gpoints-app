@@ -719,6 +719,70 @@ async function main() {
     }
   });
 
+  await check('discord notifications cannot ping the server or break voting', async () => {
+    const discord = require('../src/discord');
+    const realFetch = global.fetch;
+    const sent = [];
+
+    process.env.DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/1/token';
+    global.fetch = async (_url, opts) => {
+      sent.push(JSON.parse(opts.body));
+      return { ok: true, status: 204 };
+    };
+
+    await discord.proposalOpened({
+      kind: 'award', amount: 5, reason: '@everyone @here **bold** `code`',
+      proposerName: 'A', targetName: 'B', votesRequired: 3,
+    });
+
+    assert.deepStrictEqual(sent[0].allowed_mentions, { parse: [] },
+      'mentions must be suppressed or a reason could ping the whole server');
+    const body = sent[0].embeds[0].description;
+    assert.ok(body.includes('\\*\\*'), 'markdown in user text must be escaped');
+
+    // A Discord outage must never fail the request that already succeeded.
+    global.fetch = () => Promise.reject(new Error('discord is down'));
+    const outage = await discord.proposalOpened({
+      kind: 'award', amount: 1, reason: 'x',
+      proposerName: 'A', targetName: 'B', votesRequired: 3,
+    });
+    assert.strictEqual(outage.ok, false, 'an outage is reported, not thrown');
+
+    // With no webhook set, nothing is attempted at all.
+    delete process.env.DISCORD_WEBHOOK_URL;
+    global.fetch = () => { throw new Error('should not have been called'); };
+    const off = await discord.proposalOpened({
+      kind: 'award', amount: 1, reason: 'x',
+      proposerName: 'A', targetName: 'B', votesRequired: 3,
+    });
+    assert.ok(off.skipped, 'unconfigured discord must be a no-op');
+
+    global.fetch = realFetch;
+  });
+
+  await check('voting still works when discord is broken', async () => {
+    const realFetch = global.fetch;
+    process.env.DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/1/token';
+    global.fetch = (url, opts) =>
+      String(url).includes('discord.com')
+        ? Promise.reject(new Error('discord is down'))
+        : realFetch(url, opts);
+
+    const p = (await propose('alice', {
+      targetId: ids.Carol, kind: 'award', amount: 12, reason: 'discord is down',
+    })).body.id;
+    assert.ok(p, 'proposing must work with discord broken');
+
+    await vote('bigdave', p, 'accept');
+    await vote('erin', p, 'accept');
+    const r = await vote('frank', p, 'accept');
+    assert.strictEqual(r.body.status, 'approved',
+      'the deciding vote must still land when the webhook fails');
+
+    delete process.env.DISCORD_WEBHOOK_URL;
+    global.fetch = realFetch;
+  });
+
   await check('every page is served and clean URLs work', async () => {
     for (const path of ['/', '/login', '/propose', '/pending', '/feed', '/account',
                         '/hall-of-fame', '/admin']) {
