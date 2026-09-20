@@ -10,6 +10,9 @@
 <div class="wrap">
   <h1>🗳️ Open votes</h1>
   <p class="sub" id="sub">Loading…</p>
+  <div class="banner-info" id="discordNote" hidden>
+    Voting happens in Discord. Open the channel and use the buttons on each proposal.
+  </div>
   <div id="msg" class="msg"></div>
   <div id="list"><div class="empty">Loading…</div></div>
 </div>
@@ -24,21 +27,32 @@ function pips(count, needed, kind) {
     `<div class="pip ${i < count ? kind : ''}"></div>`).join('');
 }
 
+let appVoting = true;
+
 function card(p, needed) {
   const sign = p.kind === 'award' ? '+' : '−';
   const colour = p.kind === 'award' ? 'pos' : 'neg';
   // Your own proposal is the one case where "no vote for you" comes with something you
   // can actually do about it.
   const mine = p.blocked === 'you proposed this';
-  const buttons = p.blocked
-    ? `<p class="note">No vote for you here — ${esc(p.blocked)}.</p>`
-      + (mine ? `<div class="votes">
-           <button class="ghost cancel" data-id="${p.id}">Cancel this proposal</button>
-         </div>` : '')
-    : `<div class="votes">
-         <button class="yes" data-id="${p.id}" data-vote="accept">Accept</button>
-         <button class="no"  data-id="${p.id}" data-vote="reject">Reject</button>
-       </div>`;
+  const cancelButton = mine
+    ? `<div class="votes">
+         <button class="ghost cancel" data-id="${p.id}">Cancel this proposal</button>
+       </div>`
+    : '';
+
+  // With voting moved to Discord the app becomes a read-only scoreboard: it still shows
+  // who is waiting on what, but the buttons live in the channel.
+  const buttons = !appVoting
+    ? (p.blocked === 'you already voted'
+        ? '<p class="note">You have voted on this one.</p>'
+        : '') + cancelButton
+    : p.blocked
+      ? `<p class="note">No vote for you here — ${esc(p.blocked)}.</p>` + cancelButton
+      : `<div class="votes">
+           <button class="yes" data-id="${p.id}" data-vote="accept">Accept</button>
+           <button class="no"  data-id="${p.id}" data-vote="reject">Reject</button>
+         </div>`;
 
   return `<div class="card prop">
     <div class="head">
@@ -59,11 +73,19 @@ function card(p, needed) {
 async function load(keepMessage) {
   if (!keepMessage) clear(msg);
   try {
-    const { proposals, votesRequired } = await api('/proposals?status=open');
+    const data = await api('/proposals?status=open');
+    const { proposals, votesRequired } = data;
+    appVoting = data.appVoting !== false;
+    document.getElementById('discordNote').hidden = appVoting;
+
     const mine = proposals.filter((p) => !p.blocked).length;
-    sub.textContent = proposals.length
-      ? `${proposals.length} open · ${mine} you can vote on · ${votesRequired} accepts carries it`
-      : 'Nothing to vote on.';
+    sub.textContent = !appVoting
+      ? (proposals.length
+          ? `${proposals.length} waiting · vote in Discord · ${votesRequired} accepts carries it`
+          : 'Nothing waiting on a vote.')
+      : proposals.length
+        ? `${proposals.length} open · ${mine} you can vote on · ${votesRequired} accepts carries it`
+        : 'Nothing to vote on.';
     list.innerHTML = proposals.length
       ? proposals.map((p) => card(p, votesRequired)).join('')
       : '<div class="empty">All caught up. Go propose something.</div>';

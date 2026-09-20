@@ -149,3 +149,12 @@ button.danger { background: var(--red); color: #fff; }
 .entry button { margin: 0; width: auto; padding: 7px 12px; font-size: 0.82rem; }
 .entry.undone { opacity: 0.55; }
 .entry.undone .amt { text-decoration: line-through; }
+
+/* ---- informational banner ---- */
+.banner-info {
+  background: #1b2438; border: 1px solid #2f3d5c; color: #c8d4f0;
+  border-radius: var(--radius); padding: 11px 14px; margin-bottom: 14px;
+  font-size: 0.88rem; line-height: 1.45;
+}
+.linked { color: var(--green); font-weight: 600; }
+.unlinked { color: var(--dim); }

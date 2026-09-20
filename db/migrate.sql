@@ -44,3 +44,21 @@ CREATE VIEW ledger AS
 CREATE INDEX IF NOT EXISTS proposals_open ON proposals (status) WHERE status = 'open';
 CREATE INDEX IF NOT EXISTS proposals_standing
   ON proposals (season_id, target_id, resolved_at) WHERE status = 'approved';
+
+-- Discord voting: link an app account to a Discord user, and remember which message
+-- carries a proposal's buttons so the tally can be edited in place.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS discord_id   text;
+ALTER TABLE proposals ADD COLUMN IF NOT EXISTS discord_message_id text;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'users_discord_id_key') THEN
+    ALTER TABLE users ADD CONSTRAINT users_discord_id_key UNIQUE (discord_id);
+  END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS discord_link_codes (
+  discord_id text PRIMARY KEY,
+  code       text NOT NULL,
+  expires_at timestamptz NOT NULL
+);

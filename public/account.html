@@ -16,6 +16,22 @@
   <h2>Standing</h2>
   <div class="card"><div class="stats" id="stats"></div></div>
 
+  <h2>Discord</h2>
+  <div class="card">
+    <p style="margin:0 0 10px" id="discordState">Checking…</p>
+    <div id="linkFields">
+      <p class="note" style="margin-top:0">
+        Click a vote button in Discord. It replies with a code — put it here to link your
+        accounts, then your Discord votes count as yours.
+      </p>
+      <label for="linkCode">Code from Discord</label>
+      <input id="linkCode" maxlength="12" placeholder="e.g. K7PQ2M" autocapitalize="characters"
+             autocorrect="off" spellcheck="false">
+      <button id="linkBtn">Link my Discord</button>
+    </div>
+    <button id="unlinkBtn" class="ghost" hidden>Unlink Discord</button>
+  </div>
+
   <h2>Profile</h2>
   <form id="profile" class="card">
     <label for="display">Display name</label>
@@ -50,6 +66,7 @@ async function load() {
   const d = await api('/me');
   sub.textContent = `@${d.user.username} · season ${d.season} · ${d.votesCast} votes cast`;
   display.value = d.user.display_name;
+  renderDiscord(Boolean(d.discordLinked));
   emoji.value = d.user.avatar_emoji;
 
   const t = d.totals;
@@ -76,6 +93,36 @@ async function load() {
       }).join('')
     : '<div class="empty">Nothing yet.</div>';
 }
+
+function renderDiscord(linked) {
+  const state = document.getElementById('discordState');
+  state.innerHTML = linked
+    ? '<span class="linked">✅ Linked.</span> Your votes in Discord count as yours.'
+    : '<span class="unlinked">Not linked.</span> Votes you cast in Discord will not count until it is.';
+  document.getElementById('linkFields').hidden = linked;
+  document.getElementById('unlinkBtn').hidden = !linked;
+}
+
+document.getElementById('linkBtn').onclick = async () => {
+  const input = document.getElementById('linkCode');
+  clear(msg);
+  try {
+    await api('/me/link-discord', { method: 'POST', body: { code: input.value } });
+    input.value = '';
+    show(msg, 'Discord linked. Go click that vote button again.', 'ok');
+    load();
+  } catch (err) { show(msg, err.message); }
+};
+
+document.getElementById('unlinkBtn').onclick = async () => {
+  if (!confirm('Unlink Discord? Your votes there will stop counting.')) return;
+  clear(msg);
+  try {
+    await api('/me/unlink-discord', { method: 'POST' });
+    show(msg, 'Discord unlinked.', 'ok');
+    load();
+  } catch (err) { show(msg, err.message); }
+};
 
 document.getElementById('profile').onsubmit = async (e) => {
   e.preventDefault();

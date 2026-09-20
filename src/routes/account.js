@@ -38,6 +38,10 @@ router.get('/', async (req, res, next) => {
       [req.user.id]
     );
 
+    const { rows: linked } = await query(
+      'SELECT discord_id FROM users WHERE id = $1', [req.user.id]
+    );
+
     const { rows: voteCount } = await query(
       'SELECT count(*)::int AS votes_cast FROM votes WHERE voter_id = $1',
       [req.user.id]
@@ -45,6 +49,7 @@ router.get('/', async (req, res, next) => {
 
     res.json({
       user: req.user,
+      discordLinked: Boolean(linked[0]?.discord_id),
       season: season.name,
       totals: totals[0],
       votesCast: voteCount[0].votes_cast,
@@ -93,6 +98,51 @@ router.post('/password', async (req, res, next) => {
     ]);
     setSession(res, req.user.id); // refresh the cookie so the session stays valid
     res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Claim the code Discord gave you, linking that Discord account to this one. Votes cast
+// from Discord are attributed through this link, so it has to be the user proving they
+// hold the Discord account — not an admin guessing.
+router.post('/link-discord', async (req, res, next) => {
+  try {
+    const code = String(req.body?.code || '').trim().toUpperCase();
+    if (!code) return res.status(400).json({ error: 'Enter the code Discord gave you.' });
+
+    const { rows } = await query(
+      `SELECT discord_id FROM discord_link_codes
+       WHERE code = $1 AND expires_at > now()`,
+      [code]
+    );
+    if (!rows[0])
+      return res.status(404).json({ error: 'That code is wrong or has expired. Click a vote button in Discord for a new one.' });
+
+    const discordId = rows[0].discord_id;
+
+    const { rows: taken } = await query(
+      'SELECT id, display_name FROM users WHERE discord_id = $1 AND id <> $2',
+      [discordId, req.user.id]
+    );
+    if (taken[0])
+      return res.status(409).json({
+        error: `That Discord account is already linked to ${taken[0].display_name}.`,
+      });
+
+    await query('UPDATE users SET discord_id = $1 WHERE id = $2', [discordId, req.user.id]);
+    await query('DELETE FROM discord_link_codes WHERE discord_id = $1', [discordId]);
+
+    res.json({ linked: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/unlink-discord', async (req, res, next) => {
+  try {
+    await query('UPDATE users SET discord_id = NULL WHERE id = $1', [req.user.id]);
+    res.json({ linked: false });
   } catch (err) {
     next(err);
   }

@@ -28,7 +28,7 @@ stored in `./.pglite`, no server and no password needed. Set `DATABASE_URL` and 
 to normal Postgres. Same code either way.
 
 ```bash
-npm test                  # 54 end-to-end tests
+npm test                  # 59 end-to-end tests
 ```
 
 Two things to know about the local PGlite database:
@@ -156,7 +156,9 @@ public/               the whole frontend: plain HTML, one CSS file, no build ste
 db/schema.sql         tables, constraints and the ledger view
 src/periods.js        week/month/year boundaries in APP_TZ
 src/discord.js        optional Discord webhook notifications
-scripts/test.cjs      54 end-to-end tests
+src/discordBot.js     Discord application: buttons, and verifying clicks
+src/voting.js         the voting rules, shared by the app and Discord
+scripts/test.cjs      59 end-to-end tests
 ```
 
 **There are no stored balances anywhere.** Approved proposals *are* the ledger, so all four
@@ -186,7 +188,11 @@ old transaction can retroactively change who won a past week.
 | `ADMIN_USERNAMES` | Whoever signs up with one of these is admin automatically. Default `nick`. |
 | `APP_TZ` | IANA timezone for period boundaries, e.g. `America/Toronto`. An invalid name falls back to Toronto with a warning rather than breaking the site. |
 | `NODE_ENV` | Set to `production` in Vercel so cookies are `Secure`. |
-| `DISCORD_WEBHOOK_URL` | Optional. Posts to Discord when a proposal opens, lands or is reversed. |
+| `DISCORD_WEBHOOK_URL` | Optional. One-way notifications. Ignored once the bot below is set up. |
+| `DISCORD_BOT_TOKEN` | Optional. Lets the app post proposals with vote buttons. |
+| `DISCORD_PUBLIC_KEY` | Verifies button clicks really came from Discord. Required with the token. |
+| `DISCORD_CHANNEL_ID` | Which channel proposals are posted to. |
+| `APP_VOTING` | `on`/`off`. Defaults to off once Discord voting is configured. |
 | `APP_URL` | Optional. Your live URL, so Discord messages link to the voting page. |
 
 All of them are read **at startup**. Change one and you must restart locally, or redeploy on

@@ -15,6 +15,7 @@ CREATE TABLE users (
   avatar_emoji  text NOT NULL DEFAULT '🙂',
   password_hash text NOT NULL,
   is_admin      boolean NOT NULL DEFAULT false,
+  discord_id    text UNIQUE,
   created_at    timestamptz NOT NULL DEFAULT now()
 );
 
@@ -26,6 +27,13 @@ CREATE TABLE seasons (
   closed_at  timestamptz
 );
 CREATE UNIQUE INDEX one_active_season ON seasons ((closed_at IS NULL)) WHERE closed_at IS NULL;
+
+-- A code handed to an unlinked Discord user so they can claim their app account.
+CREATE TABLE discord_link_codes (
+  discord_id text PRIMARY KEY,
+  code       text NOT NULL,
+  expires_at timestamptz NOT NULL
+);
 
 CREATE TABLE proposals (
   id          serial PRIMARY KEY,
@@ -43,6 +51,7 @@ CREATE TABLE proposals (
   reversed_at timestamptz,
   reversed_by integer REFERENCES users(id),
   reverse_reason text,
+  discord_message_id text,
   CHECK (proposer_id <> target_id)
 );
 CREATE INDEX proposals_open     ON proposals (status) WHERE status = 'open';

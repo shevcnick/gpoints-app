@@ -1,14 +1,11 @@
 const router = require('express').Router();
 const { query, tx, activeSeason } = require('../db');
 const discord = require('../discord');
+const bot = require('../discordBot');
+const { castVote, votesRequired, sweepExpired, proposalForDisplay } = require('../voting');
 
 const MAX_AMOUNT = 100000;
-const votesRequired = () => Number(process.env.VOTES_REQUIRED) || 3;
 
-// Lazily retires proposals past their deadline, which avoids needing a cron job.
-const sweepExpired = () =>
-  query(`UPDATE proposals SET status = 'expired', resolved_at = now()
-         WHERE status = 'open' AND expires_at < now()`);
 
 const PROPOSAL_FIELDS = `
   p.id, p.kind, p.amount, p.reason, p.status, p.created_at, p.expires_at, p.resolved_at,
@@ -55,17 +52,39 @@ router.post('/', async (req, res, next) => {
        VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
       [season.id, req.user.id, target, kind, amt, why]
     );
-    // Before the response: on serverless the function stops executing once a response
-    // is sent, so anything fired afterwards is killed. proposalOpened never throws and
-    // times out quickly, so the worst case is a slightly slower reply, not a failure.
-    await discord.proposalOpened({
-      kind, amount: amt, reason: why,
-      proposerName: req.user.display_name,
-      targetName: targetRows[0].display_name,
-      votesRequired: votesRequired(),
-    });
+    const id = rows[0].id;
 
-    res.status(201).json({ id: rows[0].id, votesRequired: votesRequired() });
+    // Before the response: on serverless the function stops executing once a response is
+    // sent, so anything fired afterwards is killed.
+    //
+    // With the bot configured, the proposal is posted as a message carrying the vote
+    // buttons, and its id is stored so the tally can be edited in place later. Without
+    // it, fall back to the plain one-way webhook.
+    if (bot.configured()) {
+      const posted = await bot.postProposal({
+        id, kind, amount: amt, reason: why,
+        proposerName: req.user.display_name,
+        targetName: targetRows[0].display_name,
+        votesRequired: votesRequired(),
+      });
+      if (posted.ok && posted.body?.id) {
+        await query('UPDATE proposals SET discord_message_id = $1 WHERE id = $2',
+          [posted.body.id, id]);
+      }
+    } else {
+      await discord.proposalOpened({
+        kind, amount: amt, reason: why,
+        proposerName: req.user.display_name,
+        targetName: targetRows[0].display_name,
+        votesRequired: votesRequired(),
+      });
+    }
+
+    res.status(201).json({
+      id,
+      votesRequired: votesRequired(),
+      voteIn: bot.appVotingEnabled() ? 'app' : 'discord',
+    });
   } catch (err) {
     next(err);
   }
@@ -92,6 +111,8 @@ router.get('/', async (req, res, next) => {
 
     res.json({
       votesRequired: votesRequired(),
+      // The page hides its vote buttons when voting has moved to Discord.
+      appVoting: bot.appVotingEnabled(),
       proposals: rows.map((r) => ({
         ...r,
         accepts: Number(r.accepts),
@@ -109,89 +130,53 @@ router.get('/', async (req, res, next) => {
   }
 });
 
-// The one endpoint where a race could mint points twice, so the read, the insert and the
-// status flip all happen inside one transaction against a locked proposal row.
+// Voting from the app. The rules live in src/voting.js so the Discord path cannot drift
+// away from them; this handler only decides whether app voting is open at all.
 router.post('/:id/vote', async (req, res, next) => {
   try {
-    const vote = req.body?.vote;
-    if (vote !== 'accept' && vote !== 'reject')
-      return res.status(400).json({ error: 'Vote must be accept or reject.' });
+    if (!bot.appVotingEnabled()) {
+      return res.status(403).json({
+        error: 'Voting happens in Discord now. Open the channel and use the buttons.',
+      });
+    }
 
     const id = Number(req.params.id);
     if (!Number.isInteger(id)) return res.status(400).json({ error: 'Bad proposal id.' });
 
-    await sweepExpired();
-    const needed = votesRequired();
+    const result = await castVote({ proposalId: id, voterId: req.user.id, vote: req.body?.vote });
 
-    const result = await tx(async (client) => {
-      // FOR UPDATE serializes concurrent voters on this proposal: the second voter
-      // blocks here until the first has committed, so both see an accurate tally.
-      const { rows } = await client.query('SELECT * FROM proposals WHERE id = $1 FOR UPDATE', [id]);
-      const p = rows[0];
-      if (!p) return { code: 404, body: { error: 'That proposal is gone.' } };
-      if (p.status !== 'open')
-        return { code: 409, body: { error: `Already ${p.status} — voting is closed.` } };
-      if (new Date(p.expires_at) < new Date())
-        return { code: 409, body: { error: 'That proposal expired.' } };
-      if (p.proposer_id === req.user.id)
-        return { code: 403, body: { error: "You proposed this, so you can't vote on it." } };
-      if (p.target_id === req.user.id)
-        return { code: 403, body: { error: "You can't vote on your own points." } };
-
-      const inserted = await client.query(
-        `INSERT INTO votes (proposal_id, voter_id, vote) VALUES ($1, $2, $3)
-         ON CONFLICT (proposal_id, voter_id) DO NOTHING RETURNING vote`,
-        [id, req.user.id, vote]
-      );
-      if (!inserted.rows[0])
-        return { code: 409, body: { error: 'You already voted on this one.' } };
-
-      const { rows: tally } = await client.query(
-        `SELECT count(*) FILTER (WHERE vote = 'accept') AS accepts,
-                count(*) FILTER (WHERE vote = 'reject') AS rejects
-         FROM votes WHERE proposal_id = $1`,
-        [id]
-      );
-      const accepts = Number(tally[0].accepts);
-      const rejects = Number(tally[0].rejects);
-
-      let status = 'open';
-      if (accepts >= needed) status = 'approved';
-      else if (rejects >= needed) status = 'rejected';
-
-      if (status !== 'open') {
-        await client.query(
-          `UPDATE proposals SET status = $1, resolved_at = now() WHERE id = $2`,
-          [status, id]
-        );
-      }
-      return {
-        code: 200,
-        body: { status, accepts, rejects, votesRequired: needed },
-        // Carried out of the transaction so the announcement happens after commit —
-        // never announce points that might still roll back.
-        resolved: status !== 'open' ? { ...p, status, accepts, rejects } : null,
-      };
-    });
-
-    // Announced after the transaction commits but before the response, for the same
-    // reason as above: work started after res.json() does not survive on serverless.
-    if (result.resolved) {
-      const p = result.resolved;
-      const { rows } = await query('SELECT display_name FROM users WHERE id = $1',
-        [p.target_id]);
-      await discord.proposalResolved({
-        kind: p.kind, amount: p.amount, reason: p.reason,
-        targetName: rows[0]?.display_name || 'someone',
-        status: p.status, accepts: p.accepts, rejects: p.rejects,
-      });
-    }
+    // Keep the Discord message in step with a vote cast in the app, and announce the
+    // outcome. Before the response: nothing runs after res.json() on serverless.
+    await syncDiscord(id, result);
 
     res.status(result.code).json(result.body);
   } catch (err) {
     next(err);
   }
 });
+
+// Mirrors a vote back to Discord: redraw the tally, and announce if it settled.
+async function syncDiscord(proposalId, result) {
+  if (result.code !== 200) return;
+  try {
+    const fresh = await proposalForDisplay(proposalId);
+    if (fresh?.discord_message_id && bot.configured()) {
+      await bot.editProposal(fresh.discord_message_id, { ...fresh, id: proposalId });
+    }
+    if (result.resolved) {
+      const p = result.resolved;
+      const { rows } = await query(
+        'SELECT display_name FROM users WHERE id = $1', [p.target_id]);
+      await discord.proposalResolved({
+        kind: p.kind, amount: p.amount, reason: p.reason,
+        targetName: rows[0]?.display_name || 'someone',
+        status: p.status, accepts: p.accepts, rejects: p.rejects,
+      });
+    }
+  } catch (err) {
+    console.error('Could not sync Discord: ' + err.message);
+  }
+}
 
 // Two different needs behind one verb:
 //

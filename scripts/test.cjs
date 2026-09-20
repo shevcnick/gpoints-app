@@ -23,6 +23,8 @@ async function check(name, fn) {
 }
 
 let base;
+let signIt;            // set once a signing key exists, used by the Discord tests
+let discordProposal;   // the proposal those tests vote on
 const jars = {};
 
 // Minimal cookie jar per username, so several "browsers" can act at once.
@@ -888,6 +890,183 @@ async function main() {
 
     delete process.env.DISCORD_WEBHOOK_URL;
     global.fetch = realFetch;
+  });
+
+  // ------------------------------------------------------- voting from Discord
+  //
+  // The interactions endpoint is public — Discord calls it, so anyone can. Its only
+  // defence is the Ed25519 signature, which makes these the most important tests here.
+  await check('an unsigned or wrongly signed interaction is rejected', async () => {
+    const nacl = require('node:crypto');
+    const { publicKey, privateKey } = nacl.generateKeyPairSync('ed25519');
+    const pubHex = publicKey.export({ type: 'spki', format: 'der' })
+      .subarray(12).toString('hex');
+    process.env.DISCORD_PUBLIC_KEY = pubHex;
+
+    const body = JSON.stringify({ type: 1 });
+
+    // No signature at all.
+    const bare = await fetch(base + '/api/discord/interactions', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body,
+    });
+    assert.strictEqual(bare.status, 401, 'an unsigned interaction must be refused');
+
+    // Signature from the wrong key.
+    const wrongKey = nacl.generateKeyPairSync('ed25519').privateKey;
+    const ts = String(Math.floor(Date.now() / 1000));
+    const forged = nacl.sign(null, Buffer.from(ts + body), wrongKey).toString('hex');
+    const bad = await fetch(base + '/api/discord/interactions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Signature-Ed25519': forged,
+        'X-Signature-Timestamp': ts,
+      },
+      body,
+    });
+    assert.strictEqual(bad.status, 401, 'a forged signature must be refused');
+
+    // Correctly signed PING must be PONGed, or Discord will not accept the endpoint.
+    const good = nacl.sign(null, Buffer.from(ts + body), privateKey).toString('hex');
+    const ok = await fetch(base + '/api/discord/interactions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Signature-Ed25519': good,
+        'X-Signature-Timestamp': ts,
+      },
+      body,
+    });
+    assert.strictEqual(ok.status, 200);
+    assert.deepStrictEqual(await ok.json(), { type: 1 }, 'a PING must be PONGed');
+
+    signIt = (payload) => {
+      const raw = JSON.stringify(payload);
+      const stamp = String(Math.floor(Date.now() / 1000));
+      return {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Signature-Ed25519': nacl.sign(null, Buffer.from(stamp + raw), privateKey).toString('hex'),
+          'X-Signature-Timestamp': stamp,
+        },
+        body: raw,
+      };
+    };
+  });
+
+  await check('an unlinked Discord user is given a link code, not a vote', async () => {
+    const p = (await propose('alice', {
+      targetId: ids.Bob, kind: 'award', amount: 14, reason: 'from discord',
+    })).body.id;
+
+    const res = await fetch(base + '/api/discord/interactions', signIt({
+      type: 3,
+      data: { custom_id: `vote:${p}:accept` },
+      member: { user: { id: '999000111222' } },
+    }));
+    const body = await res.json();
+    assert.strictEqual(res.status, 200);
+    assert.match(body.data.content, /not linked/i, 'must explain the account is unlinked');
+    assert.strictEqual(body.data.flags, 64, 'and say so privately');
+
+    const { rows } = await query(
+      'SELECT code FROM discord_link_codes WHERE discord_id = $1', ['999000111222']);
+    assert.ok(rows[0]?.code, 'a code must have been issued');
+    assert.ok(body.data.content.includes(rows[0].code), 'and shown to the user');
+
+    // No vote was recorded for an unknown person.
+    const votes = await query('SELECT count(*)::int c FROM votes WHERE proposal_id = $1', [p]);
+    assert.strictEqual(votes.rows[0].c, 0, 'an unlinked click must not count as a vote');
+
+    discordProposal = p;
+  });
+
+  await check('claiming the code links the account, and then Discord votes count', async () => {
+    const { rows } = await query(
+      'SELECT code FROM discord_link_codes WHERE discord_id = $1', ['999000111222']);
+
+    const wrong = await call('carol', '/me/link-discord', {
+      method: 'POST', body: { code: 'NOPE99' },
+    });
+    assert.strictEqual(wrong.status, 404, 'a bad code must be refused');
+
+    const linked = await call('carol', '/me/link-discord', {
+      method: 'POST', body: { code: rows[0].code },
+    });
+    assert.strictEqual(linked.status, 200, JSON.stringify(linked.body));
+
+    // The code is single use.
+    const reuse = await call('erin', '/me/link-discord', {
+      method: 'POST', body: { code: rows[0].code },
+    });
+    assert.strictEqual(reuse.status, 404, 'a claimed code must not work twice');
+
+    // Now the same Discord click counts as Carol.
+    const res = await fetch(base + '/api/discord/interactions', signIt({
+      type: 3,
+      data: { custom_id: `vote:${discordProposal}:accept` },
+      member: { user: { id: '999000111222' } },
+    }));
+    const body = await res.json();
+    assert.strictEqual(body.type, 7, 'the message should be updated in place');
+
+    const votes = await query(
+      `SELECT u.username FROM votes v JOIN users u ON u.id = v.voter_id
+       WHERE v.proposal_id = $1`, [discordProposal]);
+    assert.strictEqual(votes.rows.length, 1);
+    assert.strictEqual(votes.rows[0].username, 'carol',
+      'the vote must be attributed to the linked account');
+  });
+
+  await check('Discord votes obey the same rules as app votes', async () => {
+    // Carol already voted above; clicking again must be refused, not double-counted.
+    const again = await fetch(base + '/api/discord/interactions', signIt({
+      type: 3,
+      data: { custom_id: `vote:${discordProposal}:accept` },
+      member: { user: { id: '999000111222' } },
+    }));
+    const body = await again.json();
+    assert.match(body.data?.content || '', /already voted/i);
+
+    const votes = await query(
+      'SELECT count(*)::int c FROM votes WHERE proposal_id = $1', [discordProposal]);
+    assert.strictEqual(votes.rows[0].c, 1, 'still exactly one vote');
+
+    // And the proposer cannot vote from Discord either.
+    await query('UPDATE users SET discord_id = $1 WHERE username = $2',
+      ['555000111222', 'alice']);
+    const asProposer = await fetch(base + '/api/discord/interactions', signIt({
+      type: 3,
+      data: { custom_id: `vote:${discordProposal}:accept` },
+      member: { user: { id: '555000111222' } },
+    }));
+    assert.match((await asProposer.json()).data.content, /proposed this/i);
+  });
+
+  await check('app voting can be switched off once Discord is live', async () => {
+    const bot = require('../src/discordBot');
+
+    process.env.APP_VOTING = 'off';
+    assert.strictEqual(bot.appVotingEnabled(), false);
+
+    const p = (await propose('alice', {
+      targetId: ids.Bob, kind: 'award', amount: 6, reason: 'app voting off',
+    })).body.id;
+    const blocked = await vote('carol', p, 'accept');
+    assert.strictEqual(blocked.status, 403, 'app voting must be refused');
+    assert.match(blocked.body.error, /Discord/i, 'and say where to vote instead');
+
+    const list = await call('carol', '/proposals?status=open');
+    assert.strictEqual(list.body.appVoting, false,
+      'the page must be told so it can hide its buttons');
+
+    process.env.APP_VOTING = 'on';
+    assert.strictEqual(bot.appVotingEnabled(), true);
+    const allowed = await vote('carol', p, 'accept');
+    assert.strictEqual(allowed.status, 200, 'and switching back must restore it');
+
+    delete process.env.APP_VOTING;
   });
 
   await check('every page is served and clean URLs work', async () => {
