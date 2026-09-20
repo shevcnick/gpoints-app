@@ -62,3 +62,4 @@ CREATE TABLE IF NOT EXISTS discord_link_codes (
   code       text NOT NULL,
   expires_at timestamptz NOT NULL
 );
+ALTER TABLE proposals ADD COLUMN IF NOT EXISTS discord_channel_id text;

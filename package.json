@@ -9,7 +9,8 @@
     "db:reset": "node scripts/setup-db.cjs --seed",
     "test": "node scripts/test.cjs",
     "use-neon": "node scripts/use-neon.cjs",
-    "db:migrate": "node scripts/migrate.cjs"
+    "db:migrate": "node scripts/migrate.cjs",
+    "discord:register": "node scripts/register-commands.cjs"
   },
   "keywords": [],
   "author": "",

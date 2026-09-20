@@ -1044,6 +1044,112 @@ async function main() {
     assert.match((await asProposer.json()).data.content, /proposed this/i);
   });
 
+  await check('/propose autocomplete offers G Points members', async () => {
+    const res = await fetch(base + '/api/discord/interactions', signIt({
+      type: 4,
+      data: { name: 'propose', options: [{ name: 'user', value: 'car', focused: true }] },
+      member: { user: { id: '999000111222' } },
+    }));
+    const body = await res.json();
+    assert.strictEqual(body.type, 8, 'must be an autocomplete result');
+    assert.ok(body.data.choices.some((c) => /Carol/i.test(c.name)),
+      'typing "car" should offer Carol');
+    // The value is an account id, so a duplicated display name cannot be ambiguous.
+    assert.match(body.data.choices[0].value, /^\d+$/, 'choices must carry the user id');
+  });
+
+  await check('/propose creates a proposal in the channel it was typed in', async () => {
+    const posted = [];
+    const realFetch = global.fetch;
+    global.fetch = async (url, opts) => {
+      if (String(url).includes('discord.com/api/')) {
+        posted.push({ url: String(url), body: JSON.parse(opts.body) });
+        return { ok: true, status: 200, text: async () => JSON.stringify({ id: '555999' }) };
+      }
+      return realFetch(url, opts);
+    };
+
+    const before = await countRows('SELECT count(*)::int c FROM proposals');
+    const res = await fetch(base + '/api/discord/interactions', signIt({
+      type: 2,
+      channel_id: '777888999',
+      data: {
+        name: 'propose',
+        options: [
+          { name: 'user', value: String(ids.Bob) },
+          { name: 'type', value: 'award' },
+          { name: 'amount', value: 250 },
+          { name: 'why', value: 'typed it straight into discord' },
+        ],
+      },
+      member: { user: { id: '999000111222' } }, // carol, linked earlier
+    }));
+    const body = await res.json();
+    global.fetch = realFetch;
+
+    assert.match(body.data.content, /Posted/i, JSON.stringify(body));
+    assert.strictEqual(body.data.flags, 64, 'the confirmation should be private');
+    assert.strictEqual(await countRows('SELECT count(*)::int c FROM proposals'), before + 1);
+
+    // Posted to the channel the command came from, not the configured one.
+    assert.ok(posted.some((p) => p.url.includes('/channels/777888999/messages')),
+      'must post to the channel the command was used in');
+    const message = posted.find((p) => p.url.includes('777888999')).body;
+    assert.ok(message.components?.[0]?.components?.length === 2,
+      'the posted message must carry the two vote buttons');
+
+    const { rows } = await query(
+      `SELECT p.amount, p.reason, p.discord_message_id, p.discord_channel_id,
+              pr.username AS proposer
+       FROM proposals p JOIN users pr ON pr.id = p.proposer_id
+       ORDER BY p.id DESC LIMIT 1`
+    );
+    assert.strictEqual(rows[0].proposer, 'carol', 'attributed to the linked account');
+    assert.strictEqual(rows[0].amount, 250);
+    assert.strictEqual(rows[0].discord_message_id, '555999', 'message id stored for editing');
+    assert.strictEqual(rows[0].discord_channel_id, '777888999');
+  });
+
+  await check('/propose enforces the same rules as the app', async () => {
+    const send = (options, who = '999000111222') =>
+      fetch(base + '/api/discord/interactions', signIt({
+        type: 2, channel_id: '777888999',
+        data: { name: 'propose', options },
+        member: { user: { id: who } },
+      })).then((r) => r.json());
+
+    const base_ = [
+      { name: 'type', value: 'award' },
+      { name: 'amount', value: 10 },
+      { name: 'why', value: 'x' },
+    ];
+
+    // Carol proposing for Carol.
+    const carolId = (await query("SELECT id FROM users WHERE username = 'carol'")).rows[0].id;
+    let r = await send([{ name: 'user', value: String(carolId) }, ...base_]);
+    assert.match(r.data.content, /yourself/i, 'must refuse proposing for yourself');
+
+    r = await send([
+      { name: 'user', value: String(ids.Bob) },
+      { name: 'type', value: 'award' },
+      { name: 'amount', value: 100001 },
+      { name: 'why', value: 'x' },
+    ]);
+    assert.match(r.data.content, /between 1 and/i, 'must enforce the cap');
+
+    r = await send([
+      { name: 'user', value: String(ids.Bob) },
+      { name: 'type', value: 'award' },
+      { name: 'amount', value: 10 },
+      { name: 'why', value: '   ' },
+    ]);
+    assert.match(r.data.content, /say why/i, 'must require a reason');
+
+    // Someone whose Discord is not linked gets a code, not a proposal.
+    r = await send([{ name: 'user', value: String(ids.Bob) }, ...base_], '000111222333');
+    assert.match(r.data.content, /link your discord/i, 'unlinked users must be told to link');
+  });
+
   await check('app voting can be switched off once Discord is live', async () => {
     const bot = require('../src/discordBot');
 

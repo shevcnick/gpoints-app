@@ -141,19 +141,62 @@ function proposalMessage({ id, kind, amount, reason, proposerName, targetName,
   };
 }
 
-const postProposal = (proposal) =>
-  api(`/channels/${channelId()}/messages`, {
+// The application id is the first segment of the bot token, base64url encoded. Deriving
+// it saves asking for yet another environment variable.
+function applicationId() {
+  const explicit = (process.env.DISCORD_APPLICATION_ID || '').trim();
+  if (explicit) return explicit;
+  const first = token().split('.')[0];
+  if (!first) return '';
+  try {
+    return Buffer.from(first, 'base64').toString('utf8').replace(/\D/g, '');
+  } catch {
+    return '';
+  }
+}
+
+// Posts to an explicit channel when given one, so /propose lands where it was typed
+// rather than in the configured channel.
+const postProposal = (proposal, toChannel) =>
+  api(`/channels/${toChannel || channelId()}/messages`, {
     method: 'POST',
     body: JSON.stringify(proposalMessage(proposal)),
   });
 
-const editProposal = (messageId, proposal) =>
-  api(`/channels/${channelId()}/messages/${messageId}`, {
+const editProposal = (messageId, proposal, inChannel) =>
+  api(`/channels/${inChannel || channelId()}/messages/${messageId}`, {
     method: 'PATCH',
     body: JSON.stringify(proposalMessage(proposal)),
   });
 
+// The slash commands this app registers. Kept here so the registration script and the
+// handler cannot disagree about names or option order.
+const COMMANDS = [
+  {
+    name: 'propose',
+    description: 'Propose awarding or deducting G points',
+    options: [
+      {
+        name: 'user', description: 'Who is receiving', type: 3, required: true,
+        autocomplete: true, // completes over G Points members, not Discord members
+      },
+      {
+        name: 'type', description: 'Award or deduct', type: 3, required: true,
+        choices: [
+          { name: 'Award  (+)', value: 'award' },
+          { name: 'Deduct (−)', value: 'deduct' },
+        ],
+      },
+      {
+        name: 'amount', description: 'How many, 1 to 100000', type: 4, required: true,
+        min_value: 1, max_value: 100000,
+      },
+      { name: 'why', description: 'Make the case. Everyone sees this.', type: 3, required: true },
+    ],
+  },
+];
+
 module.exports = {
-  configured, appVotingEnabled, verifySignature, proposalMessage,
-  postProposal, editProposal, api, escapeMarkdown,
+  configured, appVotingEnabled, verifySignature, proposalMessage, applicationId,
+  postProposal, editProposal, api, escapeMarkdown, COMMANDS, channelId,
 };
