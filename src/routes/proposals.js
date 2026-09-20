@@ -193,4 +193,62 @@ router.post('/:id/vote', async (req, res, next) => {
   }
 });
 
+// Two different needs behind one verb:
+//
+//   the proposer, on their own OPEN proposal  -> cancel. Status becomes 'cancelled',
+//       so it leaves the voting list but the record of asking survives.
+//   an admin, on anything                     -> permanent delete, votes and all.
+//
+// Reversing and deleting are not the same thing. Reversing an approved proposal takes
+// the points off and says publicly why; deleting it erases that it ever happened. The
+// response says which occurred so the UI can be honest about it.
+router.delete('/:id', async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'Bad proposal id.' });
+
+    const result = await tx(async (client) => {
+      const { rows } = await client.query(
+        'SELECT * FROM proposals WHERE id = $1 FOR UPDATE', [id]
+      );
+      const p = rows[0];
+      if (!p) return { code: 404, body: { error: 'No such proposal.' } };
+
+      if (req.user.is_admin) {
+        await client.query('DELETE FROM votes WHERE proposal_id = $1', [id]);
+        await client.query('DELETE FROM proposals WHERE id = $1', [id]);
+        return {
+          code: 200,
+          body: {
+            deleted: true,
+            wasStatus: p.status,
+            // Deleting an approved proposal silently moves someone's total, so say so.
+            pointsChanged: p.status === 'approved'
+              ? (p.kind === 'award' ? -p.amount : p.amount)
+              : 0,
+          },
+        };
+      }
+
+      if (p.proposer_id !== req.user.id)
+        return { code: 403, body: { error: 'You can only cancel your own proposals.' } };
+      if (p.status !== 'open')
+        return {
+          code: 409,
+          body: { error: `Too late — that one is already ${p.status}.` },
+        };
+
+      await client.query(
+        `UPDATE proposals SET status = 'cancelled', resolved_at = now() WHERE id = $1`,
+        [id]
+      );
+      return { code: 200, body: { cancelled: true } };
+    });
+
+    res.status(result.code).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

@@ -16,6 +16,13 @@
   <p class="note" style="margin-top:0">Tap someone to edit their name, username or avatar.</p>
   <div class="card" id="members"></div>
 
+  <h2>Open proposals</h2>
+  <p class="note" style="margin-top:0">
+    Delete clears junk out of everyone's voting list. It is permanent — use Reverse below
+    for points that were already awarded.
+  </p>
+  <div class="card" id="open"></div>
+
   <h2>Reverse a transaction</h2>
   <p class="note" style="margin-top:0">
     Reversing takes the points straight back off. The record stays in the feed marked
@@ -144,6 +151,41 @@ ledgerEl.onclick = async (e) => {
   }
 };
 
+const openEl = document.getElementById('open');
+
+async function loadOpen() {
+  const { proposals } = await api('/admin/open');
+  openEl.innerHTML = proposals.length
+    ? proposals.map((p) => {
+        const sign = p.kind === 'award' ? '+' : '−';
+        return `<div class="entry" data-id="${p.id}">
+          <span class="amt ${p.kind === 'award' ? 'pos' : 'neg'}">${sign}${num(p.amount)}</span>
+          <span class="what">${esc(p.target_emoji)} <b>${esc(p.target_name)}</b> — “${esc(p.reason)}”
+            <small>by ${esc(p.proposer_name)} · ${ago(p.created_at)} · ${p.accepts} accepted
+              · ${until(p.expires_at)}</small></span>
+          <button class="danger del">Delete</button>
+        </div>`;
+      }).join('')
+    : '<div class="empty">Nothing waiting on a vote.</div>';
+}
+
+openEl.onclick = async (e) => {
+  if (!e.target.classList.contains('del')) return;
+  const row = e.target.closest('.entry');
+  if (!confirm('Delete this proposal permanently? It disappears for everyone.')) return;
+
+  e.target.disabled = true;
+  clear(msg);
+  try {
+    await api('/proposals/' + row.dataset.id, { method: 'DELETE' });
+    show(msg, 'Deleted.', 'ok');
+    await Promise.all([loadOpen(), loadLedger()]);
+  } catch (err) {
+    show(msg, err.message);
+    e.target.disabled = false;
+  }
+};
+
 document.getElementById('download').onclick = () => { location.href = '/api/admin/export'; };
 
 document.getElementById('close').onclick = async () => {
@@ -158,12 +200,13 @@ document.getElementById('close').onclick = async () => {
       + `. Season ${r.newSeason} has begun.`, 'ok');
     document.getElementById('confirm').value = '';
     loadMembers();
+    loadOpen();
     loadLedger();
   } catch (err) { show(msg, err.message); }
 };
 
 boot()
-  .then(() => Promise.all([loadMembers(), loadLedger()]))
+  .then(() => Promise.all([loadMembers(), loadOpen(), loadLedger()]))
   .catch((err) => show(msg, err.message));
 </script>
 </body>

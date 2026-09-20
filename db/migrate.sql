@@ -25,7 +25,7 @@ BEGIN
   END IF;
 
   ALTER TABLE proposals ADD CONSTRAINT proposals_status_check
-    CHECK (status IN ('open','approved','rejected','expired','reversed'));
+    CHECK (status IN ('open','approved','rejected','expired','reversed','cancelled'));
 END $$;
 
 -- Season standings gained an avatar column so past winners keep their emoji.

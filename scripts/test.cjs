@@ -600,6 +600,86 @@ async function main() {
     assert.strictEqual(r.status, 403);
   });
 
+  await check('a proposer can cancel their own open proposal', async () => {
+    // Deliberately a non-admin: an admin takes the permanent-delete path instead.
+    const p = (await propose('carol', {
+      targetId: ids.Bob, kind: 'award', amount: 8, reason: 'changed my mind',
+    })).body.id;
+
+    const r = await call('carol', '/proposals/' + p, { method: 'DELETE' });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    assert.strictEqual(r.body.cancelled, true);
+
+    // Cancelled, not deleted: gone from voting, still on the record.
+    const { rows } = await query('SELECT status FROM proposals WHERE id = $1', [p]);
+    assert.strictEqual(rows[0].status, 'cancelled');
+
+    const open = (await call('alice', '/proposals?status=open')).body.proposals;
+    assert.ok(!open.some((x) => x.id === p), 'a cancelled proposal must leave the vote list');
+
+    assert.strictEqual((await vote('erin', p, 'accept')).status, 409,
+      'and must not be votable');
+  });
+
+  await check('you cannot cancel someone else proposal or one already settled', async () => {
+    const p = (await propose('carol', {
+      targetId: ids.Bob, kind: 'award', amount: 9, reason: 'not yours',
+    })).body.id;
+    assert.strictEqual((await call('erin', '/proposals/' + p, { method: 'DELETE' })).status, 403,
+      'a non-proposer non-admin must be refused');
+
+    await vote('alice', p, 'accept');
+    await vote('erin', p, 'accept');
+    await vote('bigdave', p, 'accept');
+    const late = await call('carol', '/proposals/' + p, { method: 'DELETE' });
+    assert.strictEqual(late.status, 409, 'cancelling after it passed must be refused');
+  });
+
+  await check('an admin can delete any proposal permanently', async () => {
+    const p = (await propose('carol', {
+      targetId: ids.Bob, kind: 'deduct', amount: 100000, reason: 'junk',
+    })).body.id;
+    await vote('alice', p, 'accept');
+
+    const r = await call('owner', '/proposals/' + p, { method: 'DELETE' });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    assert.strictEqual(r.body.deleted, true);
+    assert.strictEqual(r.body.pointsChanged, 0, 'it was never approved, so no points moved');
+
+    const { rows } = await query('SELECT id FROM proposals WHERE id = $1', [p]);
+    assert.strictEqual(rows.length, 0, 'the row must be gone');
+    const { rows: votes } = await query('SELECT * FROM votes WHERE proposal_id = $1', [p]);
+    assert.strictEqual(votes.length, 0, 'its votes must go with it');
+  });
+
+  await check('deleting an approved proposal reports the points it moved', async () => {
+    const before = await pointsOf('alice', 'Carol', 'all');
+    const p = (await propose('alice', {
+      targetId: ids.Carol, kind: 'award', amount: 40, reason: 'to be deleted',
+    })).body.id;
+    await vote('bigdave', p, 'accept');
+    await vote('erin', p, 'accept');
+    await vote('frank', p, 'accept');
+    assert.strictEqual(await pointsOf('alice', 'Carol', 'all'), before + 40);
+
+    const r = await call('owner', '/proposals/' + p, { method: 'DELETE' });
+    assert.strictEqual(r.body.pointsChanged, -40,
+      'deleting an approved award must report the swing it caused');
+    assert.strictEqual(await pointsOf('alice', 'Carol', 'all'), before,
+      'and the points must actually come off');
+  });
+
+  await check('the admin open list shows only what is still open', async () => {
+    const r = await call('owner', '/admin/open');
+    assert.strictEqual(r.status, 200);
+    for (const p of r.body.proposals) {
+      const { rows } = await query('SELECT status FROM proposals WHERE id = $1', [p.id]);
+      assert.strictEqual(rows[0].status, 'open', 'only open proposals may be listed');
+    }
+    assert.strictEqual((await call('carol', '/admin/open')).status, 403,
+      'non-admins must not see it');
+  });
+
   await check('the current period reports a Sunday-midnight week boundary', async () => {
     const r = await call('alice', '/seasons/current');
     assert.strictEqual(r.status, 200);

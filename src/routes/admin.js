@@ -256,6 +256,29 @@ router.get('/ledger', async (req, res, next) => {
   }
 });
 
+// Everything still open, so junk proposals can be cleared out of the voting list.
+router.get('/open', async (req, res, next) => {
+  try {
+    const season = await activeSeason();
+    const { rows } = await query(
+      `SELECT p.id, p.kind, p.amount, p.reason, p.created_at, p.expires_at,
+              pr.display_name AS proposer_name,
+              tg.display_name AS target_name, tg.avatar_emoji AS target_emoji,
+              (SELECT count(*)::int FROM votes v
+                WHERE v.proposal_id = p.id AND v.vote = 'accept') AS accepts
+       FROM proposals p
+       JOIN users pr ON pr.id = p.proposer_id
+       JOIN users tg ON tg.id = p.target_id
+       WHERE p.season_id = $1 AND p.status = 'open'
+       ORDER BY p.created_at ASC`,
+      [season.id]
+    );
+    res.json({ proposals: rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get('/members', async (req, res, next) => {
   try {
     const { rows } = await query(

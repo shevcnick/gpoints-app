@@ -27,8 +27,14 @@ function pips(count, needed, kind) {
 function card(p, needed) {
   const sign = p.kind === 'award' ? '+' : '−';
   const colour = p.kind === 'award' ? 'pos' : 'neg';
+  // Your own proposal is the one case where "no vote for you" comes with something you
+  // can actually do about it.
+  const mine = p.blocked === 'you proposed this';
   const buttons = p.blocked
     ? `<p class="note">No vote for you here — ${esc(p.blocked)}.</p>`
+      + (mine ? `<div class="votes">
+           <button class="ghost cancel" data-id="${p.id}">Cancel this proposal</button>
+         </div>` : '')
     : `<div class="votes">
          <button class="yes" data-id="${p.id}" data-vote="accept">Accept</button>
          <button class="no"  data-id="${p.id}" data-vote="reject">Reject</button>
@@ -68,6 +74,22 @@ async function load(keepMessage) {
 }
 
 list.onclick = async (e) => {
+  const cancelButton = e.target.closest('button.cancel');
+  if (cancelButton) {
+    if (!confirm('Withdraw this proposal? It stops the vote.')) return;
+    cancelButton.disabled = true;
+    clear(msg);
+    try {
+      await api('/proposals/' + cancelButton.dataset.id, { method: 'DELETE' });
+      await load(true);
+      show(msg, 'Withdrawn.', 'ok');
+    } catch (err) {
+      show(msg, err.message);
+      cancelButton.disabled = false;
+    }
+    return;
+  }
+
   const button = e.target.closest('button[data-vote]');
   if (!button) return;
   // Disable the whole pair so a double-tap can't fire two requests.

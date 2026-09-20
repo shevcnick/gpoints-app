@@ -36,7 +36,7 @@ CREATE TABLE proposals (
   amount      integer NOT NULL CHECK (amount BETWEEN 1 AND 100000),
   reason      text NOT NULL CHECK (length(trim(reason)) > 0),
   status      text NOT NULL DEFAULT 'open'
-                CHECK (status IN ('open','approved','rejected','expired','reversed')),
+                CHECK (status IN ('open','approved','rejected','expired','reversed','cancelled')),
   created_at  timestamptz NOT NULL DEFAULT now(),
   expires_at  timestamptz NOT NULL DEFAULT now() + interval '7 days',
   resolved_at timestamptz,
