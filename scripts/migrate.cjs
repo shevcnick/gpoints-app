@@ -64,7 +64,8 @@ function liveUrl() {
     process.exit(1);
   }
   console.log('\nDone. Nothing was deleted.');
-  process.exit(0);
+  // No process.exit: the client is already closed, and forcing exit while sockets are
+  // still closing makes libuv print an assertion failure on Windows.
 })().catch((err) => {
   console.error('FAILED: ' + err.message);
   process.exit(1);
