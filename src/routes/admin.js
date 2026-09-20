@@ -256,6 +256,77 @@ router.get('/ledger', async (req, res, next) => {
   }
 });
 
+// Tells you exactly why Discord posting is failing, without digging through logs.
+// Read-only apart from the test message it offers to send.
+router.get('/discord-check', async (req, res, next) => {
+  try {
+    const bot = require('../discordBot');
+    const out = {
+      botToken: Boolean((process.env.DISCORD_BOT_TOKEN || '').trim()),
+      publicKey: Boolean((process.env.DISCORD_PUBLIC_KEY || '').trim()),
+      channelId: (process.env.DISCORD_CHANNEL_ID || '').trim() || null,
+      appUrl: (process.env.APP_URL || '').trim() || null,
+      discordVoting: bot.configured(),
+      appVoting: bot.appVotingEnabled(),
+    };
+
+    if (!out.discordVoting) {
+      out.verdict = 'Discord voting is not fully configured yet.';
+      return res.json(out);
+    }
+
+    // Who is the bot, and is the channel reachable?
+    const me = await bot.api('/users/@me');
+    out.botUser = me.ok ? `${me.body.username} (${me.body.id})` : null;
+    if (!me.ok) {
+      out.verdict = bot.explainFailure(me);
+      return res.json(out);
+    }
+
+    const channel = await bot.api('/channels/' + out.channelId);
+    if (!channel.ok) {
+      out.channel = null;
+      out.verdict = bot.explainFailure(channel);
+      return res.json(out);
+    }
+
+    out.channel = {
+      name: channel.body.name,
+      // 0 is a normal text channel; 4 is a category, which cannot hold messages.
+      type: channel.body.type,
+      isTextChannel: channel.body.type === 0 || channel.body.type === 5,
+      guild: channel.body.guild_id,
+    };
+
+    if (!out.channel.isTextChannel) {
+      out.verdict = `DISCORD_CHANNEL_ID points at "${channel.body.name}", which is not a `
+        + 'text channel (type ' + channel.body.type + '). Use a normal text channel.';
+      return res.json(out);
+    }
+
+    if (req.query.send === '1') {
+      const sent = await bot.api('/channels/' + out.channelId + '/messages', {
+        method: 'POST',
+        body: JSON.stringify({
+          content: 'G Points test message — posting works. You can ignore this.',
+          allowed_mentions: { parse: [] },
+        }),
+      });
+      out.testMessage = sent.ok ? 'sent' : bot.explainFailure(sent);
+      out.verdict = sent.ok
+        ? 'Everything works — the bot posted to the channel successfully.'
+        : 'The channel exists but the bot cannot post in it. ' + out.testMessage;
+      return res.json(out);
+    }
+
+    out.verdict = 'Config looks right. Add ?send=1 to this URL to post a real test '
+      + 'message and prove the bot can write there.';
+    res.json(out);
+  } catch (err) {
+    next(err);
+  }
+});
+
 // Everything still open, so junk proposals can be cleared out of the voting list.
 router.get('/open', async (req, res, next) => {
   try {

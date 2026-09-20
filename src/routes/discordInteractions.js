@@ -210,9 +210,8 @@ async function handleCommand(interaction) {
     // on. Undo it rather than leaving it stranded in the database.
     await query('DELETE FROM proposals WHERE id = $1', [id]);
     return reply(
-      'Could not post that in the G Points channel, so nothing was created.\n'
-      + 'The bot needs **Send Messages** and **Embed Links** there — check the channel '
-      + 'permissions, or that DISCORD_CHANNEL_ID points at a real text channel.'
+      'Could not post that in the G Points channel, so nothing was created.\n\n'
+      + bot.explainFailure(posted)
     );
   }
 

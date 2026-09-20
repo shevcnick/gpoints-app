@@ -44,7 +44,16 @@ async function api(path, options = {}) {
     const text = await res.text();
     if (!res.ok) {
       console.error(`Discord API ${options.method || 'GET'} ${path} -> ${res.status} ${text.slice(0, 200)}`);
-      return { ok: false, status: res.status };
+      // Discord's own error code and message are far more useful than a guess at what
+      // went wrong, so carry them back to whoever triggered this.
+      let detail = null;
+      try { detail = JSON.parse(text); } catch { /* not JSON */ }
+      return {
+        ok: false,
+        status: res.status,
+        code: detail?.code ?? null,
+        message: detail?.message || text.slice(0, 120),
+      };
     }
     return { ok: true, body: text ? JSON.parse(text) : null };
   } catch (err) {
@@ -196,7 +205,40 @@ const COMMANDS = [
   },
 ];
 
+// Discord's error codes are precise; turn the common ones into the actual fix.
+function explainFailure(result) {
+  const code = result?.code;
+  const where = 'DISCORD_CHANNEL_ID';
+
+  if (code === 50001) {
+    return 'Missing Access — the bot is not in that channel, or is not in the server at '
+      + 'all. If you invited the app with only the `applications.commands` scope, slash '
+      + 'commands work but there is no bot user to post messages. Re-invite it with the '
+      + '`bot` scope as well.';
+  }
+  if (code === 50013) {
+    return 'Missing Permissions — the bot is in the channel but cannot post. Give its '
+      + 'role **Send Messages** and **Embed Links** on that channel.';
+  }
+  if (code === 10003) {
+    return `Unknown Channel — ${where} does not match a channel the bot can see. Make `
+      + 'sure it is a text channel id (right-click the channel itself), not the server '
+      + 'or a category.';
+  }
+  if (result?.status === 401) {
+    return 'Unauthorized — DISCORD_BOT_TOKEN is wrong or was reset. Copy it again from '
+      + 'the Developer Portal.';
+  }
+  if (result?.status === 403) {
+    return 'Forbidden — the bot is not allowed to post there. Check the channel '
+      + 'permissions for its role.';
+  }
+  return result?.message
+    ? `Discord said: ${result.message}${code ? ` (code ${code})` : ''}.`
+    : 'No further detail from Discord.';
+}
+
 module.exports = {
   configured, appVotingEnabled, verifySignature, proposalMessage, applicationId,
-  postProposal, editProposal, api, escapeMarkdown, COMMANDS, channelId,
+  postProposal, editProposal, api, escapeMarkdown, COMMANDS, channelId, explainFailure,
 };
