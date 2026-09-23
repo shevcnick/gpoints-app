@@ -197,7 +197,7 @@ const COMMANDS = [
         ],
       },
       {
-        name: 'amount', description: 'How many, 1 to 1000000000', type: 4, required: true,
+        name: 'amount', description: 'How many, 1 to 1,000,000,000', type: 4, required: true,
         min_value: 1, max_value: 1000000000,
       },
       { name: 'why', description: 'Make the case. Everyone sees this.', type: 3, required: true },

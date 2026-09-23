@@ -54,8 +54,16 @@ function fromEnvFile(name) {
     process.exit(1);
   }
 
+  // Print the limits Discord now holds, not the ones we sent: command definitions live
+  // on Discord's side, so changing them in code does nothing until this runs.
   for (const c of res.body) {
     console.log('  /' + c.name + ' — ' + c.description);
+    for (const o of c.options || []) {
+      const range = o.max_value !== undefined
+        ? ` (${(o.min_value ?? 0).toLocaleString()} to ${o.max_value.toLocaleString()})`
+        : '';
+      console.log('      ' + o.name + range);
+    }
   }
   console.log(
     guildId
