@@ -63,3 +63,7 @@ CREATE TABLE IF NOT EXISTS discord_link_codes (
   expires_at timestamptz NOT NULL
 );
 ALTER TABLE proposals ADD COLUMN IF NOT EXISTS discord_channel_id text;
+
+-- Admin point adjustments are ordinary approved ledger rows, flagged so the feed can
+-- label them honestly instead of implying three people voted.
+ALTER TABLE proposals ADD COLUMN IF NOT EXISTS is_adjustment boolean NOT NULL DEFAULT false;

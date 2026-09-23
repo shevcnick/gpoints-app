@@ -161,6 +161,22 @@ router.patch('/users/:id', async (req, res, next) => {
       updates.push(`avatar_emoji = $${values.length}`);
     }
 
+    if (req.body?.isAdmin !== undefined) {
+      const makeAdmin = Boolean(req.body.isAdmin);
+      // Removing the last admin would lock everyone out of this page for good.
+      if (!makeAdmin) {
+        if (id === req.user.id)
+          return res.status(400).json({ error: 'You cannot remove your own admin rights.' });
+        const { rows: admins } = await query(
+          'SELECT count(*)::int AS c FROM users WHERE is_admin = true'
+        );
+        if (admins[0].c <= 1)
+          return res.status(409).json({ error: 'That is the only admin left.' });
+      }
+      values.push(makeAdmin);
+      updates.push(`is_admin = $${values.length}`);
+    }
+
     if (!updates.length) return res.status(400).json({ error: 'Nothing to change.' });
 
     values.push(id);
@@ -170,6 +186,88 @@ router.patch('/users/:id', async (req, res, next) => {
       values
     );
     res.json({ user: rows[0], was: existing[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+const MAX_AMOUNT = 100000;
+
+// Set someone's season total directly.
+//
+// There are no stored balances, so this cannot just overwrite a number. It writes the
+// difference as an ordinary approved ledger row, flagged as an adjustment — the total
+// lands where you asked, the feed says an admin did it and why, and every point still
+// traces back to a row.
+router.post('/users/:id/adjust', async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'Bad user id.' });
+
+    const { rows: target } = await query(
+      'SELECT id, display_name FROM users WHERE id = $1', [id]
+    );
+    if (!target[0]) return res.status(404).json({ error: 'No such user.' });
+
+    const reason = String(req.body?.reason || '').trim();
+    if (!reason) return res.status(400).json({ error: 'Say why you are changing it.' });
+    if (reason.length > 280)
+      return res.status(400).json({ error: 'Keep the reason under 280 characters.' });
+
+    const season = await activeSeason();
+
+    const result = await tx(async (client) => {
+      // Locking the ledger rows is not possible through a view, so lock the user row:
+      // two admins adjusting the same person at once must not both read the same total.
+      await client.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [id]);
+
+      const { rows: current } = await client.query(
+        `SELECT COALESCE(SUM(delta), 0)::int AS total FROM ledger
+         WHERE user_id = $1 AND season_id = $2`,
+        [id, season.id]
+      );
+      const before = current[0].total;
+
+      // Either an exact total to land on, or a straight delta.
+      let delta;
+      if (req.body?.setTo !== undefined) {
+        const setTo = Number(req.body.setTo);
+        if (!Number.isInteger(setTo))
+          return { code: 400, body: { error: 'New total must be a whole number.' } };
+        delta = setTo - before;
+      } else {
+        delta = Number(req.body?.delta);
+        if (!Number.isInteger(delta))
+          return { code: 400, body: { error: 'Change must be a whole number.' } };
+      }
+
+      if (delta === 0)
+        return { code: 400, body: { error: 'That is already their total.' } };
+
+      if (Math.abs(delta) > MAX_AMOUNT)
+        return {
+          code: 400,
+          body: {
+            error: `That is a change of ${Math.abs(delta).toLocaleString()}, and a single `
+              + `entry is capped at ${MAX_AMOUNT.toLocaleString()}. Do it in steps.`,
+          },
+        };
+
+      await client.query(
+        `INSERT INTO proposals
+           (season_id, proposer_id, target_id, kind, amount, reason,
+            status, resolved_at, is_adjustment)
+         VALUES ($1, $2, $3, $4, $5, $6, 'approved', now(), true)`,
+        [
+          season.id, req.user.id, id,
+          delta > 0 ? 'award' : 'deduct', Math.abs(delta), reason,
+        ]
+      );
+
+      return { code: 200, body: { before, after: before + delta, delta } };
+    });
+
+    res.status(result.code).json(result.body);
   } catch (err) {
     next(err);
   }
@@ -457,11 +555,16 @@ router.get('/open', async (req, res, next) => {
 
 router.get('/members', async (req, res, next) => {
   try {
+    const season = await activeSeason();
     const { rows } = await query(
       `SELECT u.id, u.username, u.display_name, u.avatar_emoji, u.is_admin, u.created_at,
+              (u.discord_id IS NOT NULL) AS discord_linked,
               (SELECT count(*)::int FROM votes v WHERE v.voter_id = u.id) AS votes_cast,
-              (SELECT count(*)::int FROM proposals p WHERE p.proposer_id = u.id) AS proposed
-       FROM users u ORDER BY u.id`
+              (SELECT count(*)::int FROM proposals p WHERE p.proposer_id = u.id) AS proposed,
+              (SELECT COALESCE(SUM(l.delta), 0)::int FROM ledger l
+                WHERE l.user_id = u.id AND l.season_id = $1) AS points
+       FROM users u ORDER BY u.id`,
+      [season.id]
     );
     res.json({ members: rows });
   } catch (err) {

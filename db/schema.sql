@@ -53,6 +53,7 @@ CREATE TABLE proposals (
   reverse_reason text,
   discord_message_id text,
   discord_channel_id text,
+  is_adjustment boolean NOT NULL DEFAULT false,
   CHECK (proposer_id <> target_id)
 );
 CREATE INDEX proposals_open     ON proposals (status) WHERE status = 'open';

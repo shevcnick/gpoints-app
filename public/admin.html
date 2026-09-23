@@ -78,8 +78,26 @@ async function loadMembers() {
         <input class="f-username" value="${esc(m.username)}" maxlength="20" autocapitalize="none">
         <label>Avatar</label>
         <input class="f-emoji" value="${esc(m.avatar_emoji)}" maxlength="8">
+
+        <label class="toggle">
+          <input type="checkbox" class="f-admin" ${m.is_admin ? 'checked' : ''}>
+          <span>Admin — can edit members, reverse points and close the season</span>
+        </label>
+
         <button class="save">Save changes</button>
-        <button class="danger remove" style="margin-top:8px">Delete this member</button>
+
+        <label>G points this season</label>
+        <div class="row">
+          <input class="f-points" type="number" step="1" value="${m.points}"
+                 inputmode="numeric">
+          <button class="ghost adjust" style="margin-top:0">Set total</button>
+        </div>
+        <p class="note" style="margin-top:6px">
+          Currently <b class="${cls(m.points)}">${signed(m.points)}</b>. Changing this writes
+          an adjustment to the feed, so everyone can see it was you.
+        </p>
+
+        <button class="danger remove" style="margin-top:14px">Delete this member</button>
       </div>
     </div>`).join('');
 }
@@ -127,6 +145,27 @@ membersEl.onclick = async (e) => {
     return;
   }
 
+  if (e.target.classList.contains('adjust')) {
+    const wanted = row.querySelector('.f-points').value;
+    const reason = prompt('Why are you changing their points? Everyone sees this.');
+    if (reason === null) return;
+    if (!reason.trim()) { show(msg, 'A reason is required.'); return; }
+
+    e.target.disabled = true;
+    clear(msg);
+    try {
+      const r = await api('/admin/users/' + row.dataset.id + '/adjust', {
+        method: 'POST', body: { setTo: Number(wanted), reason },
+      });
+      show(msg, `Changed ${signed(r.before)} → ${signed(r.after)} (${signed(r.delta)}).`, 'ok');
+      await Promise.all([loadMembers(), loadLedger()]);
+    } catch (err) {
+      show(msg, err.message);
+      e.target.disabled = false;
+    }
+    return;
+  }
+
   if (e.target.classList.contains('save')) {
     e.target.disabled = true;
     clear(msg);
@@ -137,6 +176,7 @@ membersEl.onclick = async (e) => {
           displayName: row.querySelector('.f-display').value,
           username: row.querySelector('.f-username').value,
           avatarEmoji: row.querySelector('.f-emoji').value,
+          isAdmin: row.querySelector('.f-admin').checked,
         },
       });
       const renamed = r.was.username !== r.user.username;

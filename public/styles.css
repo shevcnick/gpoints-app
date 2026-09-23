@@ -158,3 +158,12 @@ button.danger { background: var(--red); color: #fff; }
 }
 .linked { color: var(--green); font-weight: 600; }
 .unlinked { color: var(--dim); }
+
+/* ---- admin toggle ---- */
+.toggle { display: flex; align-items: flex-start; gap: 10px; margin: 14px 0 4px;
+          cursor: pointer; color: var(--text); font-size: 0.88rem; }
+.toggle input { width: 20px; height: 20px; flex: 0 0 20px; margin: 0; accent-color: var(--accent); }
+.toggle span { color: var(--dim); line-height: 1.35; }
+.row > input { flex: 2; }
+.row > button { flex: 1; }
+.pill.adjustment { background: #3a3320; color: var(--gold); }

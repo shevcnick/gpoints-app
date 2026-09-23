@@ -671,6 +671,127 @@ async function main() {
       'and the points must actually come off');
   });
 
+  await check('an admin can set someone points to an exact total', async () => {
+    const { members } = (await call('owner', '/admin/members')).body;
+    const erin = members.find((m) => m.username === 'erin');
+    assert.ok('points' in erin, 'the members list must carry current points');
+
+    const noReason = await call('owner', '/admin/users/' + erin.id + '/adjust', {
+      method: 'POST', body: { setTo: 500 },
+    });
+    assert.strictEqual(noReason.status, 400, 'a reason must be required');
+
+    const r = await call('owner', '/admin/users/' + erin.id + '/adjust', {
+      method: 'POST', body: { setTo: 500, reason: 'correcting a mistake' },
+    });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    assert.strictEqual(r.body.after, 500);
+    assert.strictEqual(r.body.delta, 500 - r.body.before);
+
+    // The leaderboard must actually read 500 now.
+    assert.strictEqual(await pointsOf('alice', 'Erin', 'all'), 500);
+
+    // And it must be a real, visible ledger row, not a hidden balance edit.
+    const { rows } = await query(
+      `SELECT is_adjustment, status, reason FROM proposals
+       WHERE target_id = $1 ORDER BY id DESC LIMIT 1`, [erin.id]);
+    assert.strictEqual(rows[0].is_adjustment, true, 'must be flagged as an adjustment');
+    assert.strictEqual(rows[0].status, 'approved');
+    assert.strictEqual(rows[0].reason, 'correcting a mistake');
+
+    const feed = (await call('alice', '/proposals?status=resolved')).body.proposals;
+    assert.ok(feed.some((p) => p.is_adjustment && p.reason === 'correcting a mistake'),
+      'the adjustment must be visible in the feed');
+  });
+
+  await check('adjusting to the same total, or beyond the cap, is refused', async () => {
+    const { members } = (await call('owner', '/admin/members')).body;
+    const erin = members.find((m) => m.username === 'erin');
+
+    const same = await call('owner', '/admin/users/' + erin.id + '/adjust', {
+      method: 'POST', body: { setTo: 500, reason: 'no change' },
+    });
+    assert.strictEqual(same.status, 400, 'a zero change must be refused');
+
+    const huge = await call('owner', '/admin/users/' + erin.id + '/adjust', {
+      method: 'POST', body: { setTo: 9999999, reason: 'too big' },
+    });
+    assert.strictEqual(huge.status, 400, 'a change past the cap must be refused');
+    assert.match(huge.body.error, /in steps/i, 'and should say what to do instead');
+
+    // A plain delta works too.
+    const delta = await call('owner', '/admin/users/' + erin.id + '/adjust', {
+      method: 'POST', body: { delta: -100, reason: 'minus a hundred' },
+    });
+    assert.strictEqual(delta.status, 200);
+    assert.strictEqual(await pointsOf('alice', 'Erin', 'all'), 400);
+  });
+
+  await check('non-admins cannot adjust points', async () => {
+    const { members } = (await call('owner', '/admin/members')).body;
+    const erin = members.find((m) => m.username === 'erin');
+    const r = await call('carol', '/admin/users/' + erin.id + '/adjust', {
+      method: 'POST', body: { setTo: 99999, reason: 'give me points' },
+    });
+    assert.strictEqual(r.status, 403);
+  });
+
+  await check('an admin can promote and demote, but not strand the app', async () => {
+    const { members } = (await call('owner', '/admin/members')).body;
+    const erin = members.find((m) => m.username === 'erin');
+    const me = members.find((m) => m.username === 'nick');
+
+    // Promote.
+    let r = await call('owner', '/admin/users/' + erin.id, {
+      method: 'PATCH', body: { isAdmin: true },
+    });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    assert.strictEqual(r.body.user.is_admin, true);
+    assert.strictEqual((await call('erin', '/admin/members')).status, 200,
+      'a promoted member must reach admin endpoints');
+
+    // Demote.
+    r = await call('owner', '/admin/users/' + erin.id, {
+      method: 'PATCH', body: { isAdmin: false },
+    });
+    assert.strictEqual(r.body.user.is_admin, false);
+    assert.strictEqual((await call('erin', '/admin/members')).status, 403,
+      'and a demoted one must lose access');
+
+    // You cannot remove your own admin rights.
+    const self = await call('owner', '/admin/users/' + me.id, {
+      method: 'PATCH', body: { isAdmin: false },
+    });
+    assert.strictEqual(self.status, 400, 'must refuse self-demotion');
+  });
+
+  await check('the last admin cannot be demoted', async () => {
+    // Strip everyone back to a single admin, then try to remove them.
+    await query("UPDATE users SET is_admin = false WHERE username <> 'nick'");
+    const { members } = (await call('owner', '/admin/members')).body;
+    const other = members.find((m) => m.username === 'carol');
+
+    await call('owner', '/admin/users/' + other.id, {
+      method: 'PATCH', body: { isAdmin: true },
+    });
+    // Now carol demotes nick — allowed, two admins exist.
+    const me = members.find((m) => m.username === 'nick');
+    let r = await call('carol', '/admin/users/' + me.id, {
+      method: 'PATCH', body: { isAdmin: false },
+    });
+    assert.strictEqual(r.status, 200, 'demoting another admin is fine while one remains');
+
+    // Carol is now the only admin and cannot be removed by anyone.
+    const alone = await call('carol', '/admin/users/' + other.id, {
+      method: 'PATCH', body: { isAdmin: false },
+    });
+    assert.strictEqual(alone.status, 400, 'self-demotion is caught first');
+
+    // Restore the fixture exactly: nick and alice admin, everyone else not. Leaving
+    // carol promoted would silently change which branch later tests take.
+    await query("UPDATE users SET is_admin = (username IN ('nick','alice'))");
+  });
+
   await check('deleting a member reports its impact before doing it', async () => {
     const { members } = (await call('owner', '/admin/members')).body;
     const erin = members.find((m) => m.username === 'erin');

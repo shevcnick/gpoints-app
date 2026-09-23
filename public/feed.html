@@ -34,11 +34,14 @@ boot().then(async () => {
         <div class="head">
           <span class="amt ${colour}">${sign}${num(p.amount)} G</span>
           <span>→ ${esc(p.target_emoji)} <b>${esc(p.target_name)}</b></span>
-          <span class="pill ${p.status}">${p.status}</span>
+          <span class="pill ${p.is_adjustment ? 'adjustment' : p.status}">${p.is_adjustment ? 'adjusted' : p.status}</span>
         </div>
         <p class="why">“${esc(p.reason)}”</p>
-        <p class="meta">by ${esc(p.proposer_name)} · ${p.accepts} accepted${
-          p.rejects ? `, ${p.rejects} rejected` : ''} · ${ago(p.resolved_at)}</p>
+        <p class="meta">${p.is_adjustment
+          ? `admin adjustment by ${esc(p.proposer_name)}`
+          : `by ${esc(p.proposer_name)} · ${p.accepts} accepted${
+              p.rejects ? `, ${p.rejects} rejected` : ''}`
+        } · ${ago(p.resolved_at)}</p>
       </div>`;
     }).join('');
   } catch (err) {

@@ -9,7 +9,7 @@ const MAX_AMOUNT = 100000;
 
 const PROPOSAL_FIELDS = `
   p.id, p.kind, p.amount, p.reason, p.status, p.created_at, p.expires_at, p.resolved_at,
-  p.proposer_id, p.target_id,
+  p.proposer_id, p.target_id, p.is_adjustment,
   pr.display_name AS proposer_name, pr.avatar_emoji AS proposer_emoji,
   tg.display_name AS target_name,   tg.avatar_emoji AS target_emoji,
   (SELECT count(*) FROM votes v WHERE v.proposal_id = p.id AND v.vote = 'accept') AS accepts,
