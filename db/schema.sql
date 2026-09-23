@@ -41,7 +41,7 @@ CREATE TABLE proposals (
   proposer_id integer NOT NULL REFERENCES users(id),
   target_id   integer NOT NULL REFERENCES users(id),
   kind        text NOT NULL CHECK (kind IN ('award','deduct')),
-  amount      integer NOT NULL CHECK (amount BETWEEN 1 AND 100000),
+  amount      integer NOT NULL CHECK (amount BETWEEN 1 AND 1000000000),
   reason      text NOT NULL CHECK (length(trim(reason)) > 0),
   status      text NOT NULL DEFAULT 'open'
                 CHECK (status IN ('open','approved','rejected','expired','reversed','cancelled')),
@@ -76,7 +76,7 @@ CREATE TABLE season_standings (
   user_id      integer NOT NULL REFERENCES users(id),
   display_name text NOT NULL,
   avatar_emoji text NOT NULL DEFAULT '🙂',
-  total        integer NOT NULL,
+  total        bigint NOT NULL,
   rank         integer NOT NULL,
   PRIMARY KEY (season_id, user_id)
 );

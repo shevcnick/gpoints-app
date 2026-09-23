@@ -4,7 +4,7 @@ const discord = require('../discord');
 const bot = require('../discordBot');
 const { castVote, votesRequired, sweepExpired, proposalForDisplay } = require('../voting');
 
-const MAX_AMOUNT = 100000;
+const MAX_AMOUNT = 1000000000;
 
 
 const PROPOSAL_FIELDS = `

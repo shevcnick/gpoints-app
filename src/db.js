@@ -8,6 +8,16 @@
 //
 // Everything above this module only ever sees { query, tx, activeSeason }.
 
+// Sums of points are bigint, because with a billion-point cap a few entries overflow a
+// 32-bit integer. node-postgres hands bigint back as a string to avoid losing precision;
+// these totals are nowhere near 2^53, so parse them as numbers and keep the arithmetic
+// working everywhere downstream.
+try {
+  require('pg').types.setTypeParser(20, (v) => (v === null ? null : Number(v)));
+} catch {
+  // pg is not installed in some local setups; PGlite returns numbers already.
+}
+
 const USE_PGLITE = !process.env.DATABASE_URL || process.env.USE_PGLITE === '1';
 
 // PGlite is a devDependency and never ships to production. Without this, forgetting to set

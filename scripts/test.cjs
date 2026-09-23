@@ -172,8 +172,8 @@ async function main() {
   });
 
   // ------------------------------------------------------------------ validation
-  await check('amount must be a whole number in 1..100000', async () => {
-    for (const bad of [100001, 0, -5, 'abc', 5.5, null, 1000000000]) {
+  await check('amount must be a whole number in 1..1000000000', async () => {
+    for (const bad of [1000000001, 0, -5, 'abc', 5.5, null, 2147483648]) {
       const r = await propose('alice', {
         targetId: ids.Bob, kind: 'award', amount: bad, reason: 'x',
       });
@@ -181,9 +181,39 @@ async function main() {
         'amount ' + JSON.stringify(bad) + ' should be rejected, got ' + r.status);
     }
     const ok = await propose('alice', {
-      targetId: ids.Bob, kind: 'award', amount: 100000, reason: 'the cap',
+      targetId: ids.Bob, kind: 'award', amount: 1000000000, reason: 'the cap',
     });
-    assert.strictEqual(ok.status, 201, 'exactly 100000 must be allowed');
+    assert.strictEqual(ok.status, 201, 'exactly 1000000000 must be allowed');
+  });
+
+  await check('totals past a 32-bit integer do not overflow', async () => {
+    // Three billion-point awards exceed int4 (max 2,147,483,647). Before the sums were
+    // widened to bigint this crashed every leaderboard query with an overflow error.
+    for (let i = 0; i < 3; i++) {
+      const p = (await propose('alice', {
+        targetId: ids.Carol, kind: 'award', amount: 1000000000,
+        reason: 'overflow check ' + i,
+      })).body.id;
+      await vote('dave', p, 'accept');
+      await vote('erin', p, 'accept');
+      await vote('frank', p, 'accept');
+    }
+
+    const points = await pointsOf('alice', 'Carol', 'all');
+    assert.ok(points >= 3000000000,
+      'a total past 2^31 must survive, got ' + points);
+    assert.strictEqual(typeof points, 'number',
+      'bigint totals must come back as numbers, not strings');
+
+    // Every other place that sums points must survive it too.
+    for (const path of ['/leaderboard?window=all', '/leaderboard?window=week',
+                        '/me', '/seasons', '/admin/members']) {
+      const who = path.startsWith('/admin') ? 'alice' : 'carol';
+      assert.strictEqual((await call(who, path)).status, 200, path + ' must not overflow');
+    }
+
+    // Put Carol back so later expectations are not thrown off.
+    await query("UPDATE proposals SET status = 'cancelled' WHERE reason LIKE 'overflow check%'");
   });
 
   await check('reason is required and length capped', async () => {
@@ -210,7 +240,7 @@ async function main() {
     const season = (await query('SELECT id FROM seasons WHERE closed_at IS NULL')).rows[0].id;
     await assert.rejects(() => query(
       'INSERT INTO proposals (season_id, proposer_id, target_id, kind, amount, reason) '
-      + "VALUES ($1,$2,$3,'award',999999,'bypass')",
+      + "VALUES ($1,$2,$3,'award',1000000001,'bypass')",
       [season, ids.Alice, ids.Bob]));
   });
 
@@ -639,7 +669,7 @@ async function main() {
 
   await check('an admin can delete any proposal permanently', async () => {
     const p = (await propose('carol', {
-      targetId: ids.Bob, kind: 'deduct', amount: 100000, reason: 'junk',
+      targetId: ids.Bob, kind: 'deduct', amount: 1000000000, reason: 'junk',
     })).body.id;
     await vote('alice', p, 'accept');
 
@@ -714,7 +744,7 @@ async function main() {
     assert.strictEqual(same.status, 400, 'a zero change must be refused');
 
     const huge = await call('owner', '/admin/users/' + erin.id + '/adjust', {
-      method: 'POST', body: { setTo: 9999999, reason: 'too big' },
+      method: 'POST', body: { setTo: 2000000000, reason: 'too big' },
     });
     assert.strictEqual(huge.status, 400, 'a change past the cap must be refused');
     assert.match(huge.body.error, /in steps/i, 'and should say what to do instead');
@@ -1442,7 +1472,7 @@ async function main() {
     r = await send([
       { name: 'user', value: String(ids.Bob) },
       { name: 'type', value: 'award' },
-      { name: 'amount', value: 100001 },
+      { name: 'amount', value: 1000000001 },
       { name: 'why', value: 'x' },
     ]);
     assert.match(r.data.content, /between 1 and/i, 'must enforce the cap');

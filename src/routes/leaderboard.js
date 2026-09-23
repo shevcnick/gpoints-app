@@ -21,7 +21,7 @@ router.get('/', async (req, res, next) => {
     // LEFT JOIN so members with nothing yet still appear, on zero.
     const { rows } = await query(
       `SELECT u.id, u.display_name, u.avatar_emoji,
-              COALESCE(SUM(l.delta), 0)::int AS points,
+              COALESCE(SUM(l.delta), 0)::bigint AS points,
               count(l.id)::int AS changes
        FROM users u
        LEFT JOIN ledger l

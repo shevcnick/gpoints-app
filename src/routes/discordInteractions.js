@@ -21,7 +21,7 @@ const UPDATE_MESSAGE = 7;
 const AUTOCOMPLETE_RESULT = 8;
 const EPHEMERAL = 64; // only the clicker sees it
 
-const MAX_AMOUNT = 100000;
+const MAX_AMOUNT = 1000000000;
 
 const reply = (content) => ({
   type: 4,

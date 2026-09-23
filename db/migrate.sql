@@ -67,3 +67,27 @@ ALTER TABLE proposals ADD COLUMN IF NOT EXISTS discord_channel_id text;
 -- Admin point adjustments are ordinary approved ledger rows, flagged so the feed can
 -- label them honestly instead of implying three people voted.
 ALTER TABLE proposals ADD COLUMN IF NOT EXISTS is_adjustment boolean NOT NULL DEFAULT false;
+
+-- The amount cap moved from 100,000 to 1,000,000,000. The column stays integer (max
+-- 2.1 billion), but sums of several entries exceed that, which is why every SUM in the
+-- app is now cast to bigint.
+DO $$
+DECLARE
+  con_name text;
+BEGIN
+  SELECT conname INTO con_name
+  FROM pg_constraint
+  WHERE conrelid = 'proposals'::regclass
+    AND contype = 'c'
+    AND pg_get_constraintdef(oid) LIKE '%amount%';
+
+  IF con_name IS NOT NULL THEN
+    EXECUTE format('ALTER TABLE proposals DROP CONSTRAINT %I', con_name);
+  END IF;
+
+  ALTER TABLE proposals ADD CONSTRAINT proposals_amount_check
+    CHECK (amount BETWEEN 1 AND 1000000000);
+END $$;
+
+-- Frozen season totals are sums, so they need the same width as the live ones.
+ALTER TABLE season_standings ALTER COLUMN total TYPE bigint;

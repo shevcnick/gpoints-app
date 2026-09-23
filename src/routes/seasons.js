@@ -14,7 +14,7 @@ const WINNERS_SQL = (bucketExpr) => `
   WITH totals AS (
     SELECT ${bucketExpr} AS bucket,
            l.user_id,
-           SUM(l.delta)::int AS total
+           SUM(l.delta)::bigint AS total
     FROM ledger l
     WHERE l.season_id = $2
     GROUP BY bucket, l.user_id

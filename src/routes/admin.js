@@ -4,7 +4,7 @@ const discord = require('../discord');
 
 const STANDINGS_SQL = `
   SELECT u.id AS user_id, u.display_name, u.avatar_emoji,
-         COALESCE(SUM(l.delta), 0)::int AS total
+         COALESCE(SUM(l.delta), 0)::bigint AS total
   FROM users u
   LEFT JOIN ledger l ON l.user_id = u.id AND l.season_id = $1
   GROUP BY u.id, u.display_name, u.avatar_emoji
@@ -191,7 +191,7 @@ router.patch('/users/:id', async (req, res, next) => {
   }
 });
 
-const MAX_AMOUNT = 100000;
+const MAX_AMOUNT = 1000000000;
 
 // Set someone's season total directly.
 //
@@ -222,7 +222,7 @@ router.post('/users/:id/adjust', async (req, res, next) => {
       await client.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [id]);
 
       const { rows: current } = await client.query(
-        `SELECT COALESCE(SUM(delta), 0)::int AS total FROM ledger
+        `SELECT COALESCE(SUM(delta), 0)::bigint AS total FROM ledger
          WHERE user_id = $1 AND season_id = $2`,
         [id, season.id]
       );
@@ -282,14 +282,14 @@ async function deletionImpact(id) {
        (SELECT count(*)::int FROM proposals WHERE target_id = $1)   AS as_target,
        (SELECT count(*)::int FROM proposals WHERE proposer_id = $1) AS as_proposer,
        (SELECT count(*)::int FROM votes WHERE voter_id = $1)        AS votes_cast,
-       (SELECT COALESCE(SUM(delta), 0)::int FROM ledger WHERE user_id = $1) AS own_points`,
+       (SELECT COALESCE(SUM(delta), 0)::bigint FROM ledger WHERE user_id = $1) AS own_points`,
     [id]
   );
 
   // Points other people keep only because this member proposed them. Deleting the
   // member deletes those proposals, so those totals move.
   const { rows: affected } = await query(
-    `SELECT u.display_name, SUM(l.delta)::int AS delta
+    `SELECT u.display_name, SUM(l.delta)::bigint AS delta
      FROM ledger l JOIN users u ON u.id = l.user_id
      WHERE l.proposer_id = $1 AND l.user_id <> $1
      GROUP BY u.display_name
@@ -561,7 +561,7 @@ router.get('/members', async (req, res, next) => {
               (u.discord_id IS NOT NULL) AS discord_linked,
               (SELECT count(*)::int FROM votes v WHERE v.voter_id = u.id) AS votes_cast,
               (SELECT count(*)::int FROM proposals p WHERE p.proposer_id = u.id) AS proposed,
-              (SELECT COALESCE(SUM(l.delta), 0)::int FROM ledger l
+              (SELECT COALESCE(SUM(l.delta), 0)::bigint FROM ledger l
                 WHERE l.user_id = u.id AND l.season_id = $1) AS points
        FROM users u ORDER BY u.id`,
       [season.id]

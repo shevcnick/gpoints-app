@@ -10,16 +10,16 @@ router.get('/', async (req, res, next) => {
     const tz = P.tz();
 
     const { rows: totals } = await query(
-      `SELECT COALESCE(SUM(delta), 0)::int AS all_time,
+      `SELECT COALESCE(SUM(delta), 0)::bigint AS all_time,
               COALESCE(SUM(delta) FILTER (
                 WHERE resolved_at >= date_trunc('year', now() AT TIME ZONE $3) AT TIME ZONE $3
-              ), 0)::int AS year,
+              ), 0)::bigint AS year,
               COALESCE(SUM(delta) FILTER (
                 WHERE resolved_at >= date_trunc('month', now() AT TIME ZONE $3) AT TIME ZONE $3
-              ), 0)::int AS month,
+              ), 0)::bigint AS month,
               COALESCE(SUM(delta) FILTER (
                 WHERE resolved_at >= date_trunc('week', now() AT TIME ZONE $3) AT TIME ZONE $3
-              ), 0)::int AS week,
+              ), 0)::bigint AS week,
               count(*) FILTER (WHERE kind = 'award')::int  AS awards,
               count(*) FILTER (WHERE kind = 'deduct')::int AS deductions
        FROM ledger WHERE user_id = $1 AND season_id = $2`,
