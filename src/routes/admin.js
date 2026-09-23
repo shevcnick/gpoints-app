@@ -175,6 +175,111 @@ router.patch('/users/:id', async (req, res, next) => {
   }
 });
 
+// What deleting this member would actually do. A member is tangled into the ledger in
+// three directions — points they received, points they proposed for other people, and
+// votes they cast — so this is shown before anything is destroyed.
+async function deletionImpact(id) {
+  const { rows } = await query(
+    `SELECT
+       (SELECT count(*)::int FROM proposals WHERE target_id = $1)   AS as_target,
+       (SELECT count(*)::int FROM proposals WHERE proposer_id = $1) AS as_proposer,
+       (SELECT count(*)::int FROM votes WHERE voter_id = $1)        AS votes_cast,
+       (SELECT COALESCE(SUM(delta), 0)::int FROM ledger WHERE user_id = $1) AS own_points`,
+    [id]
+  );
+
+  // Points other people keep only because this member proposed them. Deleting the
+  // member deletes those proposals, so those totals move.
+  const { rows: affected } = await query(
+    `SELECT u.display_name, SUM(l.delta)::int AS delta
+     FROM ledger l JOIN users u ON u.id = l.user_id
+     WHERE l.proposer_id = $1 AND l.user_id <> $1
+     GROUP BY u.display_name
+     HAVING SUM(l.delta) <> 0
+     ORDER BY abs(SUM(l.delta)) DESC`,
+    [id]
+  );
+
+  return { ...rows[0], affectsOthers: affected };
+}
+
+router.get('/users/:id/impact', async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'Bad user id.' });
+    const { rows } = await query(
+      'SELECT id, username, display_name FROM users WHERE id = $1', [id]
+    );
+    if (!rows[0]) return res.status(404).json({ error: 'No such user.' });
+    res.json({ user: rows[0], impact: await deletionImpact(id) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Permanently remove a member and everything they were involved in.
+//
+// Deliberately not a soft delete: this exists to clean up duplicate and junk accounts,
+// and a hidden account still holding points would be worse than no feature. The username
+// must be typed to confirm, and the response reports exactly whose totals moved.
+router.delete('/users/:id', async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'Bad user id.' });
+
+    if (id === req.user.id)
+      return res.status(400).json({ error: 'You cannot delete your own account.' });
+
+    const { rows: target } = await query(
+      'SELECT id, username, display_name, is_admin, discord_id FROM users WHERE id = $1',
+      [id]
+    );
+    if (!target[0]) return res.status(404).json({ error: 'No such user.' });
+
+    if (String(req.body?.confirm || '').trim().toLowerCase() !== target[0].username)
+      return res.status(400).json({
+        error: `Type the username "${target[0].username}" to confirm.`,
+      });
+
+    if (target[0].is_admin) {
+      const { rows: admins } = await query(
+        'SELECT count(*)::int AS c FROM users WHERE is_admin = true'
+      );
+      if (admins[0].c <= 1)
+        return res.status(409).json({ error: 'That is the only admin. Promote someone else first.' });
+    }
+
+    const impact = await deletionImpact(id);
+
+    await tx(async (client) => {
+      // Votes they cast on other people's proposals. Those proposals keep whatever
+      // status they already reached; a settled vote is not re-opened.
+      await client.query('DELETE FROM votes WHERE voter_id = $1', [id]);
+
+      // Every proposal they were either side of, and the votes on them.
+      await client.query(
+        `DELETE FROM votes WHERE proposal_id IN
+           (SELECT id FROM proposals WHERE proposer_id = $1 OR target_id = $1)`,
+        [id]
+      );
+      await client.query(
+        'DELETE FROM proposals WHERE proposer_id = $1 OR target_id = $1', [id]
+      );
+
+      await client.query('DELETE FROM season_standings WHERE user_id = $1', [id]);
+      if (target[0].discord_id) {
+        await client.query('DELETE FROM discord_link_codes WHERE discord_id = $1',
+          [target[0].discord_id]);
+      }
+      await client.query('DELETE FROM users WHERE id = $1', [id]);
+    });
+
+    res.json({ deleted: target[0].display_name, username: target[0].username, impact });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // Undo an approved proposal. The row is marked 'reversed' rather than deleted: the ledger
 // view only counts 'approved', so the points come straight off, but the history of what
 // happened and who undid it survives.

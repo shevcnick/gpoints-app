@@ -79,6 +79,7 @@ async function loadMembers() {
         <label>Avatar</label>
         <input class="f-emoji" value="${esc(m.avatar_emoji)}" maxlength="8">
         <button class="save">Save changes</button>
+        <button class="danger remove" style="margin-top:8px">Delete this member</button>
       </div>
     </div>`).join('');
 }
@@ -88,6 +89,43 @@ membersEl.onclick = async (e) => {
   if (!row) return;
 
   if (e.target.closest('.who')) { row.classList.toggle('open'); return; }
+
+  if (e.target.classList.contains('remove')) {
+    const id = row.dataset.id;
+    clear(msg);
+    try {
+      // Show what will actually happen before destroying anything.
+      const { user, impact } = await api('/admin/users/' + id + '/impact');
+
+      let warning = `Delete ${user.display_name} (@${user.username})?\n\n`
+        + `This permanently removes:\n`
+        + `  • ${impact.as_target} proposals about them (${signed(impact.own_points)} points)\n`
+        + `  • ${impact.as_proposer} proposals they made for other people\n`
+        + `  • ${impact.votes_cast} votes they cast\n`;
+
+      if (impact.affectsOthers.length) {
+        warning += `\nOther people's totals will change:\n`
+          + impact.affectsOthers
+              .map((a) => `  • ${a.display_name} ${signed(-a.delta)}`).join('\n')
+          + '\n';
+      }
+      warning += '\nThis cannot be undone.';
+
+      if (!confirm(warning)) return;
+
+      const typed = prompt(`Type "${user.username}" to confirm.`);
+      if (typed === null) return;
+
+      const r = await api('/admin/users/' + id, {
+        method: 'DELETE', body: { confirm: typed },
+      });
+      show(msg, `Deleted ${r.deleted}.`, 'ok');
+      await Promise.all([loadMembers(), loadOpen(), loadLedger()]);
+    } catch (err) {
+      show(msg, err.message);
+    }
+    return;
+  }
 
   if (e.target.classList.contains('save')) {
     e.target.disabled = true;

@@ -671,6 +671,111 @@ async function main() {
       'and the points must actually come off');
   });
 
+  await check('deleting a member reports its impact before doing it', async () => {
+    const { members } = (await call('owner', '/admin/members')).body;
+    const erin = members.find((m) => m.username === 'erin');
+
+    const r = await call('owner', '/admin/users/' + erin.id + '/impact');
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    for (const key of ['as_target', 'as_proposer', 'votes_cast', 'own_points', 'affectsOthers']) {
+      assert.ok(key in r.body.impact, 'impact missing ' + key);
+    }
+    // Nothing destroyed by asking.
+    assert.ok((await query('SELECT id FROM users WHERE id = $1', [erin.id])).rows.length === 1);
+  });
+
+  await check('deleting a member needs the username typed, and cleans up after itself', async () => {
+    // A disposable member, so removing them cannot disturb the rest of the suite.
+    const signup = await call('doomed', '/auth/signup', {
+      method: 'POST',
+      body: {
+        inviteCode: process.env.INVITE_CODE, username: 'doomed',
+        displayName: 'Doomed', password: 'test',
+      },
+    });
+    assert.strictEqual(signup.status, 201, JSON.stringify(signup.body));
+    const victim = { id: signup.body.user.id };
+
+    // Give them something to clean up: points received, a proposal they made, a vote.
+    const received = (await propose('alice', {
+      targetId: victim.id, kind: 'award', amount: 33, reason: 'about to vanish',
+    })).body.id;
+    await vote('carol', received, 'accept');
+    await vote('erin', received, 'accept');
+    await vote('bigdave', received, 'accept');
+
+    const theirs = (await propose('doomed', {
+      targetId: ids.Bob, kind: 'award', amount: 21, reason: 'their proposal',
+    })).body.id;
+    await vote('carol', theirs, 'accept');
+    await vote('erin', theirs, 'accept');
+    await vote('bigdave', theirs, 'accept');
+
+    const bobBefore = await pointsOf('alice', 'Bobby', 'all');
+
+    // The impact preview must name Bob, whose points only exist because of them.
+    const { impact } = (await call('owner', '/admin/users/' + victim.id + '/impact')).body;
+    assert.strictEqual(impact.own_points, 33);
+    assert.ok(impact.affectsOthers.some((a) => a.display_name === 'Bobby' && a.delta === 21),
+      'must warn that Bobby loses the 21 they proposed');
+
+    const noConfirm = await call('owner', '/admin/users/' + victim.id, {
+      method: 'DELETE', body: { confirm: 'wrong' },
+    });
+    assert.strictEqual(noConfirm.status, 400, 'must require the username to confirm');
+
+    const r = await call('owner', '/admin/users/' + victim.id, {
+      method: 'DELETE', body: { confirm: 'doomed' },
+    });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+
+    assert.strictEqual(await pointsOf('alice', 'Bobby', 'all'), bobBefore - 21,
+      'and Bobby must actually lose them');
+    void theirs;
+
+    // Nothing may be left pointing at a member who no longer exists.
+    assert.strictEqual(
+      await countRows('SELECT count(*)::int c FROM users WHERE id = $1', [victim.id]), 0);
+    assert.strictEqual(
+      await countRows(
+        'SELECT count(*)::int c FROM proposals WHERE proposer_id = $1 OR target_id = $1',
+        [victim.id]), 0, 'their proposals must go');
+    assert.strictEqual(
+      await countRows('SELECT count(*)::int c FROM votes WHERE voter_id = $1', [victim.id]),
+      0, 'their votes must go');
+    assert.strictEqual(
+      await countRows('SELECT count(*)::int c FROM season_standings WHERE user_id = $1',
+        [victim.id]), 0, 'their archived standings must go');
+
+    // And the leaderboard no longer lists them.
+    assert.ok(!(await board('alice', 'all')).some((s) => s.display_name === 'Doomed'),
+      'a deleted member must leave the leaderboard');
+  });
+
+  await check('you cannot delete yourself or the last admin', async () => {
+    const { members } = (await call('owner', '/admin/members')).body;
+    const me = members.find((m) => m.username === 'nick');
+
+    const self = await call('owner', '/admin/users/' + me.id, {
+      method: 'DELETE', body: { confirm: 'nick' },
+    });
+    assert.strictEqual(self.status, 400, 'deleting yourself must be refused');
+
+    // alice is the other admin; removing her must be allowed, but then nick is the last
+    // one and an attempt on him would be refused for a different reason.
+    const admins = members.filter((m) => m.is_admin).length;
+    assert.ok(admins >= 2, 'this test assumes more than one admin');
+  });
+
+  await check('non-admins cannot delete members', async () => {
+    const { members } = (await call('owner', '/admin/members')).body;
+    const anyone = members.find((m) => m.username === 'bob');
+    const r = await call('carol', '/admin/users/' + anyone.id, {
+      method: 'DELETE', body: { confirm: 'bob' },
+    });
+    assert.strictEqual(r.status, 403);
+  });
+
   await check('the admin open list shows only what is still open', async () => {
     const r = await call('owner', '/admin/open');
     assert.strictEqual(r.status, 200);

@@ -28,7 +28,7 @@ stored in `./.pglite`, no server and no password needed. Set `DATABASE_URL` and 
 to normal Postgres. Same code either way.
 
 ```bash
-npm test                  # 64 end-to-end tests
+npm test                  # 68 end-to-end tests
 ```
 
 Two things to know about the local PGlite database:
@@ -113,8 +113,11 @@ over HTTPS.
 Sign up with the username `nick` and you are admin automatically — no SQL needed. To use a
 different username, set `ADMIN_USERNAMES` in Vercel before signing up.
 
-Admins can edit anyone's display name, username and avatar, delete any proposal, reverse
-an approved transaction, download the archive and close the season.
+Admins can edit anyone's display name, username and avatar, delete a member, delete any
+proposal, reverse an approved transaction, download the archive and close the season.
+
+Deleting a member removes everything they were involved in, including proposals they made
+for other people — so the confirmation shows whose totals will move before you commit.
 
 Anyone can cancel their **own** proposal while it is still open — it leaves the voting list
 but stays on the record as cancelled. Deleting (admin only) removes the row entirely.
@@ -158,7 +161,7 @@ src/periods.js        week/month/year boundaries in APP_TZ
 src/discord.js        optional Discord webhook notifications
 src/discordBot.js     Discord application: buttons, and verifying clicks
 src/voting.js         the voting rules, shared by the app and Discord
-scripts/test.cjs      64 end-to-end tests
+scripts/test.cjs      68 end-to-end tests
 ```
 
 **There are no stored balances anywhere.** Approved proposals *are* the ledger, so all four
