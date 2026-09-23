@@ -1450,6 +1450,38 @@ async function main() {
     delete process.env.DISCORD_CHANNEL_ID;
   });
 
+  await check('/leaderboard replies publicly in the channel it was used in', async () => {
+    const res = await fetch(base + '/api/discord/interactions', signIt({
+      type: 2, channel_id: '777888999',
+      data: { name: 'leaderboard', options: [{ name: 'period', value: 'all' }] },
+      member: { user: { id: '999000111222' } },
+    }));
+    const body = await res.json();
+
+    assert.strictEqual(body.type, 4, 'must reply to the interaction');
+    assert.notStrictEqual(body.data.flags, 64,
+      'must be public — an ephemeral board only the caller sees is useless');
+    assert.ok(body.data.embeds?.[0], 'must carry an embed');
+
+    const embed = body.data.embeds[0];
+    assert.match(embed.title, /All time/i);
+    assert.ok(embed.description.includes('Alice') || embed.description.includes('Carol'),
+      'the board must actually list members: ' + embed.description.slice(0, 120));
+    assert.deepStrictEqual(body.data.allowed_mentions, { parse: [] },
+      'display names are user-written, so the board must not be able to ping anyone');
+  });
+
+  await check('/leaderboard defaults to this week and labels the period', async () => {
+    const res = await fetch(base + '/api/discord/interactions', signIt({
+      type: 2, channel_id: '777888999',
+      data: { name: 'leaderboard' }, // no period given
+      member: { user: { id: '999000111222' } },
+    }));
+    const embed = (await res.json()).data.embeds[0];
+    assert.match(embed.title, /^🏆 Week \d+$/, 'should title with the week number, got ' + embed.title);
+    assert.ok(embed.timestamp, 'should carry the period end so Discord renders it live');
+  });
+
   await check('/propose enforces the same rules as the app', async () => {
     const send = (options, who = '999000111222') =>
       fetch(base + '/api/discord/interactions', signIt({

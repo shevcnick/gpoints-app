@@ -10,6 +10,7 @@ const router = require('express').Router();
 const { query, activeSeason } = require('../db');
 const bot = require('../discordBot');
 const { castVote, proposalForDisplay, votesRequired } = require('../voting');
+const { getStandings, withRanks } = require('../standings');
 
 const PING = 1;
 const APPLICATION_COMMAND = 2;
@@ -139,6 +140,7 @@ async function autocompleteMembers(interaction) {
 }
 
 async function handleCommand(interaction) {
+  if (interaction.data?.name === 'leaderboard') return handleLeaderboard(interaction);
   if (interaction.data?.name !== 'propose') return reply('Unknown command.');
 
   const discordId = interaction.member?.user?.id || interaction.user?.id;
@@ -230,6 +232,24 @@ async function handleCommand(interaction) {
     `Posted in <#${channel}> — ${votesRequired()} neutral friends need to accept it.`
     + (link ? `\n${link}` : '')
   );
+}
+
+// Replying to the interaction itself puts the board in whichever channel the command was
+// used in, with no posting permission needed — so this works even where the bot cannot
+// post messages of its own.
+async function handleLeaderboard(interaction) {
+  const options = Object.fromEntries(
+    (interaction.data.options || []).map((o) => [o.name, o.value])
+  );
+  const windowName = options.period || 'week';
+
+  const data = await getStandings(windowName);
+  if (!data) return reply('Pick week, month, year or all time.');
+
+  const message = bot.leaderboardMessage({ ...data, standings: withRanks(data.standings) });
+
+  // Type 4 without the ephemeral flag: everyone in the channel sees it.
+  return { type: 4, data: message };
 }
 
 // Six characters, unambiguous alphabet (no O/0, I/1), valid for 15 minutes.

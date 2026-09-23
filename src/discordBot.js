@@ -203,7 +203,62 @@ const COMMANDS = [
       { name: 'why', description: 'Make the case. Everyone sees this.', type: 3, required: true },
     ],
   },
+  {
+    name: 'leaderboard',
+    description: 'Show the G Points standings',
+    options: [
+      {
+        name: 'period', description: 'Which board (default: this week)', type: 3,
+        required: false,
+        choices: [
+          { name: 'This week', value: 'week' },
+          { name: 'This month', value: 'month' },
+          { name: 'This year', value: 'year' },
+          { name: 'All time', value: 'all' },
+        ],
+      },
+    ],
+  },
 ];
+
+const MEDALS = ['🥇', '🥈', '🥉'];
+
+// The standings as a Discord embed. Shown publicly, in whichever channel it was asked in.
+function leaderboardMessage({ window, standings, period, timezone }) {
+  const title = window === 'week' ? `🏆 Week ${period.week.number}`
+    : window === 'month' ? `🏆 ${period.month.name}`
+    : window === 'year' ? `🏆 ${period.year.name}`
+    : '🏆 All time';
+
+  const lines = standings.length
+    ? standings.map((s, i) => {
+        const medal = s.points > 0 && i < 3 ? MEDALS[i] : `\`${String(s.rank).padStart(2)}\``;
+        const points = (s.points > 0 ? '+' : '') + Number(s.points).toLocaleString();
+        return `${medal} ${s.avatar_emoji} **${escapeMarkdown(s.display_name)}** — ${points}`;
+      }).join('\n')
+    : 'Nobody has any points yet.';
+
+  // Discord embeds cap descriptions at 4096 characters; a very large group could hit it.
+  const description = lines.length > 3900 ? lines.slice(0, 3900) + '\n…' : lines;
+
+  const ends = window === 'week' ? period.week.endsAt
+    : window === 'month' ? period.month.endsAt
+    : window === 'year' ? period.year.endsAt
+    : null;
+
+  return {
+    embeds: [{
+      title,
+      description,
+      color: 0xf2c14e,
+      // Discord renders this timestamp in each viewer's own timezone and keeps it live,
+      // which is better than baking a countdown into text that immediately goes stale.
+      footer: { text: ends ? 'Ends' : timezone.replace('America/', '') },
+      timestamp: ends || undefined,
+    }],
+    allowed_mentions: { parse: [] },
+  };
+}
 
 // Discord's error codes are precise; turn the common ones into the actual fix.
 function explainFailure(result) {
@@ -241,4 +296,5 @@ function explainFailure(result) {
 module.exports = {
   configured, appVotingEnabled, verifySignature, proposalMessage, applicationId,
   postProposal, editProposal, api, escapeMarkdown, COMMANDS, channelId, explainFailure,
+  leaderboardMessage,
 };
