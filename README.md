@@ -1,13 +1,60 @@
 # G Points
 
-Award and deduct G points among friends. Nobody can hand themselves points: every change is
-a **proposal**, and **3 neutral friends** must accept it. Neither the person proposing nor the
-person receiving gets a vote.
+**A reputation game my friends and I actually use.** Anyone can propose awarding or
+deducting points from someone else, but nothing counts until **three neutral people
+accept it** — and neither the proposer nor the person receiving gets a vote. Voting
+happens in Discord, on the proposal itself.
 
-Leaderboards for the week, month, year and all time, with a live countdown to the next
-rollover. Weeks run Sunday 12:00 AM to Sunday 12:00 AM Toronto time and are numbered Week 1, 2,
-3… from the start of the season. The Hall of Fame keeps G of the Week, G of the Month and
-G of the Year.
+**Live:** [gpoints-app.vercel.app](https://gpoints-app.vercel.app) · Node + Express +
+Postgres · **76 end-to-end tests** · deployed free on Vercel and Neon
+
+---
+
+## What it does
+
+| | |
+|---|---|
+| **Proposals** | Award or deduct 1 – 1,000,000,000 points, with a reason everyone sees |
+| **Voting** | Three neutral accepts carries it; three rejects kills it; open proposals expire after 7 days |
+| **Leaderboards** | Week, month, year and all time, with a live countdown to the next rollover |
+| **Hall of Fame** | G of the Week, G of the Month, G of the Year |
+| **Discord** | Proposals post with vote buttons; `/propose` and `/leaderboard` slash commands |
+| **Admin** | Edit members, adjust points, reverse transactions, close the season with a full archive |
+
+Built with no framework and no build step — plain HTML and CSS on the front, Express and
+Postgres behind it.
+
+---
+
+## Why it is built this way
+
+**There are no stored balances.** Approved proposals *are* the ledger, and every total is
+a live `SUM` over them. One design choice pays for a lot:
+
+- The weekly, monthly, yearly and all-time boards are **the same query** with a different
+  `WHERE` clause.
+- Closing a season resets everyone to zero **without a cron job or a reset script** —
+  leaderboards simply scope to the active season, and nothing is ever deleted.
+- The Hall of Fame (G of the Week / Month / Year) is **computed, not snapshotted**, so no
+  scheduled job can miss a rollover and no stored winner can disagree with the points.
+- Every point is traceable to the proposal and the three votes that caused it.
+
+**The vote endpoint is the one place a race could mint points twice**, so reading the
+proposal, inserting the vote and settling it all happen in one transaction against a
+`SELECT … FOR UPDATE` row. A composite primary key on `votes` makes double-voting
+impossible at the database level, not just in application code. There is a test that fires
+the deciding vote twice at once and asserts the points move exactly once.
+
+**Discord voting is a real application, not a webhook.** Button clicks arrive at a public
+HTTPS endpoint, so every one is verified against the app's Ed25519 public key before it is
+trusted — without that, forging a vote would be a plain HTTP POST from anywhere. Discord
+accounts must be linked to an app account before their clicks count, so votes stay
+attributable. No always-on process is involved, which is what keeps it free.
+
+**Weeks run Sunday 00:00 to Sunday 00:00 in Toronto time.** All the date maths is
+calendar-based rather than millisecond-based, because across the two daylight-saving
+changeovers a day is 23 or 25 hours and adding `86400000` slides the boundary off midnight.
+Verified against all 53 weeks of the year.
 
 ---
 
