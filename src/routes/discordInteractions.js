@@ -141,6 +141,7 @@ async function autocompleteMembers(interaction) {
 
 async function handleCommand(interaction) {
   if (interaction.data?.name === 'leaderboard') return handleLeaderboard(interaction);
+  if (interaction.data?.name === 'kick') return handleKick(interaction);
   if (interaction.data?.name !== 'propose') return reply('Unknown command.');
 
   const discordId = interaction.member?.user?.id || interaction.user?.id;
@@ -232,6 +233,65 @@ async function handleCommand(interaction) {
     `Posted in <#${channel}> — ${votesRequired()} neutral friends need to accept it.`
     + (link ? `\n${link}` : '')
   );
+}
+
+// Boot someone out of voice, then say so publicly.
+//
+// Restricted to G Points admins. Discord gates this behind the Move Members permission
+// for a reason: an open version lets anyone in the server disconnect anyone else,
+// repeatedly, which stops being a joke quickly. Drop the admin check below if you want
+// the whole group to have it.
+async function handleKick(interaction) {
+  const guildId = interaction.guild_id;
+  if (!guildId) return reply('This only works in a server.');
+
+  const callerDiscordId = interaction.member?.user?.id || interaction.user?.id;
+  if (!callerDiscordId) return reply('Could not tell who you are.');
+
+  const { rows: caller } = await query(
+    'SELECT id, display_name, is_admin FROM users WHERE discord_id = $1', [callerDiscordId]
+  );
+
+  if (!caller[0]) {
+    const code = await issueLinkCode(callerDiscordId);
+    const site = (process.env.APP_URL || '').replace(/\/$/, '');
+    return reply(
+      'Link your Discord to your G Points account first.\n\n'
+      + `Go to ${site ? site + '/account' : 'the app, Account page'} and enter:\n`
+      + `**${code}**\n\nGood for 15 minutes.`
+    );
+  }
+  if (!caller[0].is_admin) return reply('Only admins can use this one.');
+
+  const targetId = String(
+    (interaction.data.options || []).find((o) => o.name === 'user')?.value || ''
+  );
+  if (!targetId) return reply('Pick someone.');
+  if (targetId === callerDiscordId) return reply('You cannot bait yourself.');
+
+  const result = await bot.disconnectFromVoice(guildId, targetId);
+
+  if (!result.ok) {
+    // 40032 is Discord's "target user is not connected to voice".
+    if (result.code === 40032) return reply('They are not in a voice channel.');
+    if (result.code === 50013) {
+      return reply(
+        'I do not have permission to move them. The bot needs **Move Members**, and its '
+        + 'role has to sit above theirs in the server role list.'
+      );
+    }
+    return reply('Could not disconnect them. ' + bot.explainFailure(result));
+  }
+
+  // The one place this app deliberately pings someone. Scoped to just this user, so a
+  // command can never be turned into an @everyone.
+  return {
+    type: 4,
+    data: {
+      content: `<@${targetId}> baited`,
+      allowed_mentions: { users: [targetId] },
+    },
+  };
 }
 
 // Replying to the interaction itself puts the board in whichever channel the command was

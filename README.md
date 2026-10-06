@@ -6,7 +6,7 @@ accept it** — and neither the proposer nor the person receiving gets a vote. V
 happens in Discord, on the proposal itself.
 
 **Live:** [gpoints-app.vercel.app](https://gpoints-app.vercel.app) · Node + Express +
-Postgres · **76 end-to-end tests** · deployed free on Vercel and Neon
+Postgres · **79 end-to-end tests** · deployed free on Vercel and Neon
 
 ---
 
@@ -18,7 +18,7 @@ Postgres · **76 end-to-end tests** · deployed free on Vercel and Neon
 | **Voting** | Three neutral accepts carries it; three rejects kills it; open proposals expire after 7 days |
 | **Leaderboards** | Week, month, year and all time, with a live countdown to the next rollover |
 | **Hall of Fame** | G of the Week, G of the Month, G of the Year |
-| **Discord** | Proposals post with vote buttons; `/propose` and `/leaderboard` slash commands |
+| **Discord** | Proposals post with vote buttons; `/propose`, `/leaderboard` and `/kick` slash commands |
 | **Admin** | Edit members, adjust points, reverse transactions, close the season with a full archive |
 
 Built with no framework and no build step — plain HTML and CSS on the front, Express and
@@ -75,7 +75,7 @@ stored in `./.pglite`, no server and no password needed. Set `DATABASE_URL` and 
 to normal Postgres. Same code either way.
 
 ```bash
-npm test                  # 76 end-to-end tests
+npm test                  # 79 end-to-end tests
 ```
 
 Two things to know about the local PGlite database:
@@ -214,7 +214,7 @@ src/discord.js        optional Discord webhook notifications
 src/discordBot.js     Discord application: buttons, and verifying clicks
 src/voting.js         the voting rules, shared by the app and Discord
 src/standings.js      the leaderboard query, shared by the page and Discord
-scripts/test.cjs      76 end-to-end tests
+scripts/test.cjs      79 end-to-end tests
 ```
 
 **There are no stored balances anywhere.** Approved proposals *are* the ledger, so all four

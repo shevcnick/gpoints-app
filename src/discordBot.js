@@ -178,6 +178,15 @@ const editProposal = (messageId, proposal, inChannel) =>
     body: JSON.stringify(proposalMessage(proposal)),
   });
 
+// Disconnect someone from voice: setting their channel to null moves them out of
+// whichever one they are in. Needs the Move Members permission, and fails with
+// "Target user is not connected to voice" if they are not in a channel at all.
+const disconnectFromVoice = (guildId, userId) =>
+  api(`/guilds/${guildId}/members/${userId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ channel_id: null }),
+  });
+
 // The slash commands this app registers. Kept here so the registration script and the
 // handler cannot disagree about names or option order.
 const COMMANDS = [
@@ -201,6 +210,15 @@ const COMMANDS = [
         min_value: 1, max_value: 1000000000,
       },
       { name: 'why', description: 'Make the case. Everyone sees this.', type: 3, required: true },
+    ],
+  },
+  {
+    name: 'kick',
+    description: 'Disconnect someone from the voice channel they are in',
+    options: [
+      // Type 6 is a Discord user picker, so this acts on a Discord account rather than
+      // a G Points member — voice channels know nothing about app accounts.
+      { name: 'user', description: 'Who to boot from voice', type: 6, required: true },
     ],
   },
   {
@@ -296,5 +314,5 @@ function explainFailure(result) {
 module.exports = {
   configured, appVotingEnabled, verifySignature, proposalMessage, applicationId,
   postProposal, editProposal, api, escapeMarkdown, COMMANDS, channelId, explainFailure,
-  leaderboardMessage,
+  leaderboardMessage, disconnectFromVoice,
 };

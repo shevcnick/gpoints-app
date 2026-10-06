@@ -1450,6 +1450,97 @@ async function main() {
     delete process.env.DISCORD_CHANNEL_ID;
   });
 
+  await check('/kick disconnects the target and pings only them', async () => {
+    const calls = [];
+    const realFetch = global.fetch;
+    global.fetch = async (url, opts) => {
+      if (String(url).includes('discord.com/api/')) {
+        calls.push({ url: String(url), method: opts.method, body: JSON.parse(opts.body) });
+        return { ok: true, status: 204, text: async () => '' };
+      }
+      return realFetch(url, opts);
+    };
+
+    // nick is an admin and linked to this Discord id earlier in the suite.
+    await query("UPDATE users SET discord_id = $1 WHERE username = 'nick'", ['888111222']);
+
+    const res = await fetch(base + '/api/discord/interactions', signIt({
+      type: 2, guild_id: '1360419275528994916', channel_id: '777888999',
+      data: { name: 'kick', options: [{ name: 'user', value: '424242424242' }] },
+      member: { user: { id: '888111222' } },
+    }));
+    const body = await res.json();
+    global.fetch = realFetch;
+
+    // Disconnecting is a PATCH setting the member's voice channel to null.
+    const patch = calls.find((c) => c.method === 'PATCH');
+    assert.ok(patch, 'must call Discord to move them');
+    assert.match(patch.url, /\/guilds\/1360419275528994916\/members\/424242424242$/);
+    assert.strictEqual(patch.body.channel_id, null, 'null channel = disconnect');
+
+    assert.strictEqual(body.data.content, '<@424242424242> baited');
+    assert.notStrictEqual(body.data.flags, 64, 'the callout should be public');
+
+    // The only command allowed to ping, and only the one person named.
+    assert.deepStrictEqual(body.data.allowed_mentions, { users: ['424242424242'] },
+      'must ping the target and nobody else');
+  });
+
+  await check('/kick is admin only and refuses self-targeting', async () => {
+    const realFetch = global.fetch;
+    let moved = false;
+    global.fetch = async (url, opts) => {
+      if (String(url).includes('discord.com/api/')) { moved = true; return { ok: true, status: 204, text: async () => '' }; }
+      return realFetch(url, opts);
+    };
+
+    // carol is linked but not an admin.
+    const asCarol = await fetch(base + '/api/discord/interactions', signIt({
+      type: 2, guild_id: '1360419275528994916',
+      data: { name: 'kick', options: [{ name: 'user', value: '424242424242' }] },
+      member: { user: { id: '999000111222' } },
+    }));
+    assert.match((await asCarol.json()).data.content, /only admins/i);
+    assert.strictEqual(moved, false, 'a non-admin must not move anyone');
+
+    const self = await fetch(base + '/api/discord/interactions', signIt({
+      type: 2, guild_id: '1360419275528994916',
+      data: { name: 'kick', options: [{ name: 'user', value: '888111222' }] },
+      member: { user: { id: '888111222' } },
+    }));
+    assert.match((await self.json()).data.content, /cannot bait yourself/i);
+
+    global.fetch = realFetch;
+  });
+
+  await check('/kick explains why it failed rather than going quiet', async () => {
+    const realFetch = global.fetch;
+    const fail = (code) => async (url, opts) => {
+      if (String(url).includes('discord.com/api/')) {
+        return { ok: false, status: 400, statusText: 'Bad Request',
+          text: async () => JSON.stringify({ code, message: 'nope' }) };
+      }
+      return realFetch(url, opts);
+    };
+
+    const send = async () => {
+      const r = await fetch(base + '/api/discord/interactions', signIt({
+        type: 2, guild_id: '1360419275528994916',
+        data: { name: 'kick', options: [{ name: 'user', value: '424242424242' }] },
+        member: { user: { id: '888111222' } },
+      }));
+      return (await r.json()).data.content;
+    };
+
+    global.fetch = fail(40032);
+    assert.match(await send(), /not in a voice channel/i);
+
+    global.fetch = fail(50013);
+    assert.match(await send(), /Move Members/i, 'should name the permission it needs');
+
+    global.fetch = realFetch;
+  });
+
   await check('/leaderboard replies publicly in the channel it was used in', async () => {
     const res = await fetch(base + '/api/discord/interactions', signIt({
       type: 2, channel_id: '777888999',
