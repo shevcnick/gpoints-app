@@ -1601,22 +1601,58 @@ async function main() {
     assert.strictEqual(reversal(null), null);
   });
 
-  await check('the watcher stops arguing after six rounds a minute', async () => {
-    const { throttle } = require('../src/voiceGuard');
+  await check('an expired protection is dropped and the person is told', async () => {
+    const { expireProtections } = require('../src/voiceGuard');
 
-    let clock = 1_000_000;
-    const limiter = throttle({ perMinute: 6, now: () => clock });
+    await query('DELETE FROM voice_protections');
+    await query(
+      `INSERT INTO voice_protections (guild_id, discord_id, added_by, expires_at) VALUES
+         ('g1', 'ran-out',  'ran-out',  now() - interval '1 minute'),
+         ('g1', 'also-done', 'someone', now() - interval '2 hours'),
+         ('g1', 'still-got-time', 'someone', now() + interval '30 minutes')`
+    );
 
-    for (let i = 0; i < 6; i++) {
-      assert.strictEqual(limiter.consume('g:alice'), 'go', 'round ' + (i + 1) + ' should go ahead');
-    }
-    assert.strictEqual(limiter.consume('g:alice'), 'quit', 'then it concedes, out loud');
-    assert.strictEqual(limiter.consume('g:alice'), 'hush', 'and does not say so again');
-    assert.strictEqual(limiter.consume('g:bob'), 'go', 'one mute war must not stop the others');
+    const told = [];
+    const ended = await expireProtections({
+      query,
+      notify: async (row) => { told.push(row.discord_id); },
+    });
 
-    // A minute later the argument can start over.
-    clock += 61_000;
-    assert.strictEqual(limiter.consume('g:alice'), 'go');
+    assert.deepStrictEqual(ended.map((r) => r.discord_id).sort(), ['also-done', 'ran-out'],
+      'only the ones whose time is up');
+    assert.deepStrictEqual(told.sort(), ['also-done', 'ran-out'],
+      'and each of them hears about it');
+
+    const { rows: left } = await query('SELECT discord_id FROM voice_protections');
+    assert.deepStrictEqual(left.map((r) => r.discord_id), ['still-got-time'],
+      'the live one must survive the sweep');
+
+    // Nothing left to expire, so nobody gets told twice.
+    const again = await expireProtections({ query, notify: async () => { told.push('again'); } });
+    assert.strictEqual(again.length, 0);
+    assert.strictEqual(told.includes('again'), false, 'a second sweep must be silent');
+
+    await query('DELETE FROM voice_protections');
+  });
+
+  await check('somebody who refuses DMs still loses their protection', async () => {
+    const { expireProtections } = require('../src/voiceGuard');
+
+    await query(
+      `INSERT INTO voice_protections (guild_id, discord_id, added_by, expires_at)
+       VALUES ('g1', 'no-dms', 'no-dms', now() - interval '1 minute')`
+    );
+
+    const complaints = [];
+    const ended = await expireProtections({
+      query,
+      notify: async () => { throw new Error('Cannot send messages to this user'); },
+      log: (line) => complaints.push(line),
+    });
+
+    assert.strictEqual(ended.length, 1, 'the row goes regardless of whether the DM landed');
+    assert.strictEqual(await countRows('SELECT count(*)::int c FROM voice_protections'), 0);
+    assert.match(complaints[0], /no-dms/, 'and it is logged rather than swallowed');
   });
 
   await check('/protect and /unprotect add and remove a row', async () => {
@@ -1640,11 +1676,18 @@ async function main() {
       'say what it does NOT do, or the first self-mute looks like a bug');
 
     const { rows: saved } = await query(
-      'SELECT guild_id, discord_id, added_by FROM voice_protections'
+      `SELECT guild_id, discord_id, added_by,
+              (expires_at > now() + interval '55 minutes') AS about_an_hour,
+              (expires_at < now() + interval '65 minutes') AS not_much_more
+       FROM voice_protections`
     );
     assert.deepStrictEqual(saved[0], {
       guild_id: '1360419275528994916', discord_id: '888111222', added_by: '888111222',
+      about_an_hour: true, not_much_more: true,
     });
+
+    // A Discord timestamp, so it counts down in each viewer's own clock.
+    assert.match(mine.content, /<t:\d+:R>/, 'the reply has to say when it runs out');
 
     // Protecting someone else is a favour anyone may do.
     await run('protect', { user: { id: '999000111222' }, permissions: '0' },
@@ -1655,6 +1698,19 @@ async function main() {
     await run('protect', { user: { id: '888111222' }, permissions: '0' },
       [{ name: 'user', value: '424242424242' }]);
     assert.strictEqual(await rows(), 2, 'the second /protect must not add a duplicate');
+
+    // Running it again is how you top up, so the clock has to move.
+    await query(
+      "UPDATE voice_protections SET expires_at = now() + interval '2 minutes' WHERE discord_id = '424242424242'"
+    );
+    await run('protect', { user: { id: '888111222' }, permissions: '0' },
+      [{ name: 'user', value: '424242424242' }]);
+    assert.strictEqual(
+      await countRows(`SELECT count(*)::int c FROM voice_protections
+                       WHERE discord_id = '424242424242'
+                         AND expires_at > now() + interval '55 minutes'`),
+      1, '/protect again must extend the hour, not leave it about to lapse'
+    );
     const { rows: who } = await query(
       "SELECT added_by FROM voice_protections WHERE discord_id = '424242424242'"
     );

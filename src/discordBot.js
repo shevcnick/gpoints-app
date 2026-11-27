@@ -207,6 +207,24 @@ const setVoiceFlags = (guildId, userId, flags) =>
     body: JSON.stringify(flags),
   });
 
+// A direct message. There is no "message this user" endpoint: a DM channel has to be
+// opened first, and it is the same channel every time, so opening it twice is harmless.
+//
+// Fails with 50007 when the person does not accept DMs from the server. That is their
+// setting, not a fault, and nothing to retry.
+async function dmUser(userId, content) {
+  const channel = await api('/users/@me/channels', {
+    method: 'POST',
+    body: JSON.stringify({ recipient_id: userId }),
+  });
+  if (!channel.ok) return channel;
+
+  return api(`/channels/${channel.body.id}/messages`, {
+    method: 'POST',
+    body: JSON.stringify({ content, allowed_mentions: { parse: [] } }),
+  });
+}
+
 // The slash commands this app registers. Kept here so the registration script and the
 // handler cannot disagree about names or option order.
 const COMMANDS = [
@@ -363,5 +381,5 @@ function explainFailure(result) {
 module.exports = {
   configured, appVotingEnabled, verifySignature, proposalMessage, applicationId,
   postProposal, editProposal, api, escapeMarkdown, COMMANDS, channelId, explainFailure,
-  leaderboardMessage, disconnectFromVoice, setDeafened, setVoiceFlags,
+  leaderboardMessage, disconnectFromVoice, setDeafened, setVoiceFlags, dmUser,
 };

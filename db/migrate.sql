@@ -100,3 +100,7 @@ CREATE TABLE IF NOT EXISTS voice_protections (
   created_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (guild_id, discord_id)
 );
+
+-- Protection now lapses rather than lasting forever. Existing rows get an hour from now.
+ALTER TABLE voice_protections
+  ADD COLUMN IF NOT EXISTS expires_at timestamptz NOT NULL DEFAULT now() + interval '1 hour';

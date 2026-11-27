@@ -31,9 +31,28 @@ if (!process.env.DISCORD_BOT_TOKEN) {
   process.env.DISCORD_BOT_TOKEN = fromEnvFile('DISCORD_BOT_TOKEN');
 }
 
+// And the database, for the same reason but it matters more here. /protect runs on Vercel
+// and writes its rows to the live database, so a watcher pointed at the local PGlite file
+// would sit watching an empty table and never undo anything — the feature would look
+// broken rather than absent.
+//
+// So this defaults to the live database and says so on startup, which is the opposite of
+// every other entry point: DATABASE_URL commented out and USE_PGLITE=1 exist to keep local
+// DEV off production, and a process whose whole job is watching a live Discord server is
+// not local dev. Pass --local to follow .env instead.
+//
+// It has to happen before src/db is required, because that picks its driver at load time.
+if (!process.argv.includes('--local')) {
+  const url = process.env.DATABASE_URL || fromEnvFile('DATABASE_URL');
+  if (/^postgres/.test(url)) {
+    process.env.DATABASE_URL = url;
+    delete process.env.USE_PGLITE;
+  }
+}
+
 const bot = require('../src/discordBot');
 const { query, label } = require('../src/db');
-const { reversal, throttle } = require('../src/voiceGuard');
+const { reversal, expireProtections } = require('../src/voiceGuard');
 
 const GATEWAY = 'wss://gateway.discord.gg/?v=10&encoding=json';
 
@@ -51,8 +70,6 @@ const HELLO = 10;
 const HEARTBEAT_ACK = 11;
 const DISPATCH = 0;
 
-const limiter = throttle({ perMinute: 6 });
-
 const log = (...parts) =>
   console.log(new Date().toISOString().slice(11, 19) + '  ' + parts.join(' '));
 
@@ -65,7 +82,9 @@ const log = (...parts) =>
 let cache = { at: 0, byGuild: new Map() };
 
 async function refresh() {
-  const { rows } = await query('SELECT guild_id, discord_id FROM voice_protections');
+  const { rows } = await query(
+    'SELECT guild_id, discord_id FROM voice_protections WHERE expires_at > now()'
+  );
   const byGuild = new Map();
   for (const row of rows) {
     if (!byGuild.has(row.guild_id)) byGuild.set(row.guild_id, new Set());
@@ -95,17 +114,10 @@ async function handleVoiceState(state) {
   if (!state.guild_id || !state.user_id) return;
   if (!(await isProtected(state.guild_id, state.user_id))) return;
 
-  const key = state.guild_id + ':' + state.user_id;
-  const verdict = limiter.consume(key);
-
-  if (verdict !== 'go') {
-    if (verdict === 'quit') {
-      log('giving up on', state.user_id, '— re-muted too many times in a minute');
-      await complain(state);
-    }
-    return;
-  }
-
+  // No cap: while a protection is live, every server mute gets undone, however many times
+  // someone tries. The hour the protection lasts is what ends a mute war now, and Discord's
+  // own 429 is the only other brake — which shows up in the log below rather than being
+  // pre-empted.
   const result = await bot.setVoiceFlags(state.guild_id, state.user_id, undo);
   if (result.ok) {
     log('undid', JSON.stringify(undo), 'on', state.user_id);
@@ -120,27 +132,46 @@ async function handleVoiceState(state) {
   }
 }
 
-// One message when the watcher concedes, so nobody is left wondering why protection
-// stopped working. Posted in the G Points channel if there is one, otherwise in the voice
-// channel's own chat.
-async function complain(state) {
-  const channel = bot.channelId() || state.channel_id;
-  if (!channel) return;
-  await bot.api(`/channels/${channel}/messages`, {
-    method: 'POST',
-    body: JSON.stringify({
-      content: `<@${state.user_id}> is protected, but someone is re-muting faster than I `
-        + 'can undo it. Standing down for a minute.',
-      allowed_mentions: { parse: [] },
-    }),
-  });
-}
-
 // Anyone already sitting there server-muted when the watcher connects, or when it comes
 // back after a restart. GUILD_CREATE carries the guild's current voice states.
 async function sweep(guild) {
   for (const state of guild.voice_states || []) {
     await handleVoiceState({ ...state, guild_id: guild.id });
+  }
+}
+
+// --- letting protections lapse ---------------------------------------------------
+//
+// Checked on a timer rather than driven by an event, because nothing happens in Discord
+// when an hour passes. Half a minute is close enough for something measured in hours, and
+// it is one small DELETE against a table with a handful of rows.
+const SWEEP_EVERY_MS = 30_000;
+
+async function sweepExpired() {
+  try {
+    const ended = await expireProtections({
+      query,
+      log,
+      notify: async ({ discord_id: userId }) => {
+        const sent = await bot.dmUser(
+          userId,
+          'Your voice protection has run out, so a server mute or deafen will stick again. '
+          + 'Run `/protect` if you want another hour.'
+        );
+        // 50007 is "this person does not accept DMs from the server" — their choice.
+        if (!sent.ok && sent.code !== 50007) {
+          log('DM to', userId, 'failed — code', sent.code ?? sent.status);
+        }
+      },
+    });
+
+    for (const row of ended) {
+      log('protection lapsed for', row.discord_id);
+      // The cache would otherwise keep undoing mutes for up to five more seconds.
+      cache.at = 0;
+    }
+  } catch (err) {
+    console.error('expiry sweep failed: ' + err.message);
   }
 }
 
@@ -287,6 +318,8 @@ async function countProtected() {
   }
 
   connect();
+  await sweepExpired();
+  setInterval(sweepExpired, SWEEP_EVERY_MS);
 })();
 
 for (const signal of ['SIGINT', 'SIGTERM']) {

@@ -6,7 +6,7 @@ accept it** — and neither the proposer nor the person receiving gets a vote. V
 happens in Discord, on the proposal itself.
 
 **Live:** [gpoints-app.vercel.app](https://gpoints-app.vercel.app) · Node + Express +
-Postgres · **85 end-to-end tests** · deployed free on Vercel and Neon
+Postgres · **86 end-to-end tests** · deployed free on Vercel and Neon
 
 ---
 
@@ -20,7 +20,7 @@ Postgres · **85 end-to-end tests** · deployed free on Vercel and Neon
 | **Hall of Fame** | G of the Week, G of the Month, G of the Year |
 | **Discord** | Proposals post with vote buttons; `/propose` and `/leaderboard` slash commands |
 | **Voice** | `/kick` to boot someone from voice, `/deafen` and `/undeafen` |
-| **Anti-mute** | `/protect` undoes any server mute or deafen put on you, within about a second |
+| **Anti-mute** | `/protect` undoes any server mute or deafen put on you for an hour, then DMs you when it lapses |
 | **Admin** | Edit members, adjust points, reverse transactions, close the season with a full archive |
 
 Built with no framework and no build step — plain HTML and CSS on the front, Express and
@@ -77,7 +77,7 @@ stored in `./.pglite`, no server and no password needed. Set `DATABASE_URL` and 
 to normal Postgres. Same code either way.
 
 ```bash
-npm test                  # 85 end-to-end tests
+npm test                  # 86 end-to-end tests
 ```
 
 Two things to know about the local PGlite database:
@@ -218,7 +218,7 @@ src/voting.js         the voting rules, shared by the app and Discord
 src/standings.js      the leaderboard query, shared by the page and Discord
 src/voiceGuard.js     the /protect rules: server mute yes, self-mute no
 scripts/protect-worker.cjs  the one always-on piece — watches voice over a gateway socket
-scripts/test.cjs      85 end-to-end tests
+scripts/test.cjs      86 end-to-end tests
 ```
 
 **There are no stored balances anywhere.** Approved proposals *are* the ledger, so all four
@@ -254,6 +254,7 @@ old transaction can retroactively change who won a past week.
 | `DISCORD_CHANNEL_ID` | Which channel proposals are posted to. |
 | `APP_VOTING` | `on`/`off`. Defaults to off once Discord voting is configured. |
 | `APP_URL` | Optional. Your live URL, so Discord messages link to the voting page. |
+| `PROTECT_MINUTES` | How long one `/protect` lasts. Default `60`, maximum a day. |
 
 All of them are read **at startup**. Change one and you must restart locally, or redeploy on
 Vercel.
@@ -285,9 +286,10 @@ reverses what other people do to you, and telling those two apart is the whole t
 All they do is write a row:
 
 ```
-/protect            protect yourself
+/protect            protect yourself for an hour
 /protect @someone   protect someone else — a favour anyone may do
-/unprotect          drop your own protection
+/protect            again, to top the hour back up
+/unprotect          drop your own protection early
 ```
 
 Taking **someone else's** protection off needs Administrator. Without that rule, whoever
@@ -310,11 +312,15 @@ is muted and carries the new state with it, so the watcher reacts in about a ten
 second and spends nothing at all until something happens. It uses no websocket library —
 Node has had a global `WebSocket` since 22, and the gateway is four opcodes.
 
-Two limits worth knowing before you rely on it:
+**It lapses after an hour** rather than lasting forever, and the watcher DMs whoever it
+was protecting to say so. `/protect` again tops the hour back up. Nothing here is meant to
+be permanent, and an expiry is also what ends a mute war when everyone involved has got
+bored and wandered off. `PROTECT_MINUTES` changes the hour.
 
-- **Role order still decides everything.** The bot can only reverse a mute from someone it
-  outranks. If its role sits below theirs, the undo fails with `50013` and the watcher
-  says so in its log.
-- **It will not fight forever.** Six undos a minute per person, then it stands down, posts
-  one message saying so, and lets the mute stand. Losing the argument loudly beats
-  spinning silently against Discord's rate limits.
+**While it is live there is no cap.** Every server mute gets undone, however many times
+someone tries it. Discord's own rate limit is the only brake, and when it bites the
+watcher logs the 429 rather than trying to be clever about it.
+
+One limit that is not going away: **role order decides everything.** The bot can only
+reverse a mute from someone it outranks. If its role sits below theirs the undo fails with
+`50013`, which the watcher says plainly in its log.

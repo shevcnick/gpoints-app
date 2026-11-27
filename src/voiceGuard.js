@@ -24,38 +24,28 @@ function reversal(state) {
   return Object.keys(body).length ? body : null;
 }
 
-// A cap on how hard the watcher will argue.
+// Protections whose time is up: dropped, and handed back so each person can be told.
 //
-// Someone with the permission can re-mute as fast as the bot un-mutes, and both sides burn
-// Discord's member-edit limit doing it. Past a few rounds a minute the bot stops, says so
-// once, and lets the mute stand: losing the argument loudly beats spinning silently.
-// One verdict per attempt, so the caller never has to count anything itself:
-//
-//   'go'    undo it
-//   'quit'  over the cap — leave the mute alone, and say so
-//   'hush'  over the cap and already said so, so stay quiet
-function throttle({ perMinute = 6, now = () => Date.now() } = {}) {
-  const seen = new Map();   // key -> timestamps inside the last minute
-  const told = new Set();   // keys already complained about
+// DELETE ... RETURNING does both halves in one statement, so two watchers running at once
+// cannot both claim the same row and send the same person two messages.
+async function expireProtections({ query, notify, log = () => {} }) {
+  const { rows } = await query(
+    `DELETE FROM voice_protections
+      WHERE expires_at <= now()
+      RETURNING guild_id, discord_id`
+  );
 
-  return {
-    consume(key) {
-      const cutoff = now() - 60_000;
-      const times = (seen.get(key) || []).filter((t) => t > cutoff);
-      seen.set(key, times);
+  for (const row of rows) {
+    try {
+      await notify(row);
+    } catch (err) {
+      // Somebody who does not accept DMs is not a failure worth stopping for; their
+      // protection is still gone either way.
+      log('could not tell ' + row.discord_id + ' it lapsed: ' + err.message);
+    }
+  }
 
-      if (times.length >= perMinute) {
-        if (told.has(key)) return 'hush';
-        told.add(key);
-        return 'quit';
-      }
-
-      times.push(now());
-      // A key back under the cap may complain again next time it goes over.
-      told.delete(key);
-      return 'go';
-    },
-  };
+  return rows;
 }
 
-module.exports = { reversal, throttle };
+module.exports = { reversal, expireProtections };

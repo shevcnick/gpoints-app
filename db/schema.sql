@@ -45,6 +45,9 @@ CREATE TABLE voice_protections (
   discord_id text NOT NULL,
   added_by   text NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
+  -- Protection lapses on its own. Nothing here is meant to be permanent, and an expiry
+  -- means a mute war ends by itself even if everyone involved walks away.
+  expires_at timestamptz NOT NULL,
   PRIMARY KEY (guild_id, discord_id)
 );
 

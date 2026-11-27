@@ -208,6 +208,13 @@ async function handleDeafen(interaction, deaf) {
   };
 }
 
+// How long one /protect lasts. Nothing is meant to be permanent here: an expiry is also
+// what stops a forgotten protection quietly outliving the joke.
+function protectMinutes() {
+  const n = Number((process.env.PROTECT_MINUTES || '').trim());
+  return Number.isInteger(n) && n > 0 && n <= 1440 ? n : 60;
+}
+
 // /protect writes a row; something else has to act on it.
 //
 // Nothing here can watch a voice channel: this endpoint only exists for the few hundred
@@ -240,15 +247,24 @@ async function handleProtect(interaction, protecting) {
   }
 
   if (protecting) {
-    await query(
-      `INSERT INTO voice_protections (guild_id, discord_id, added_by)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (guild_id, discord_id) DO UPDATE SET added_by = EXCLUDED.added_by`,
-      [guildId, targetId, callerDiscordId]
+    // Running it again extends the hour rather than refusing, so topping up is just
+    // /protect again.
+    const { rows } = await query(
+      `INSERT INTO voice_protections (guild_id, discord_id, added_by, expires_at)
+       VALUES ($1, $2, $3, now() + ($4 || ' minutes')::interval)
+       ON CONFLICT (guild_id, discord_id) DO UPDATE
+         SET added_by = EXCLUDED.added_by, expires_at = EXCLUDED.expires_at
+       RETURNING expires_at`,
+      [guildId, targetId, callerDiscordId, String(protectMinutes())]
     );
+
+    // Discord renders a timestamp in each viewer's own clock and keeps it counting, which
+    // beats writing "for an hour" and being wrong the moment someone tops it up.
+    const ends = Math.floor(new Date(rows[0].expires_at).getTime() / 1000);
+
     return reply(
       (self ? 'You are protected.' : `<@${targetId}> is protected.`)
-      + ' Any server mute or deafen will be undone within about a second.'
+      + ` Any server mute or deafen will be undone within about a second, until <t:${ends}:t> (<t:${ends}:R>).`
       + '\n\nMuting yourself still works — this only undoes what other people do to you.'
     );
   }
