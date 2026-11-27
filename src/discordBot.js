@@ -187,6 +187,41 @@ const disconnectFromVoice = (guildId, userId) =>
     body: JSON.stringify({ channel_id: null }),
   });
 
+// Server deafen, on or off. Needs the Deafen Members permission, and like every other
+// member edit it fails if the target's top role sits above the bot's.
+//
+// Applied once, on request. Nothing re-applies it: anyone with the permission can lift
+// it, including the person it was used on asking someone to.
+const setDeafened = (guildId, userId, deaf) =>
+  api(`/guilds/${guildId}/members/${userId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ deaf }),
+  });
+
+// Who is in a voice channel is the one thing the REST API will not hand over in a
+// single call: there is an endpoint for one member's voice state and none that lists a
+// channel's occupants. A bot holding a gateway connection keeps those states in memory;
+// a serverless one has to ask about people one at a time, which is why /troll walks the
+// member list. Fine for a friend group, the wrong shape for a big server.
+//
+// Listing members needs the Server Members Intent switched on in the Developer Portal.
+// One page of a thousand is as far as this goes: past that a server is too big for
+// a command that asks about members one at a time anyway.
+const listMembers = (guildId) =>
+  api(`/guilds/${guildId}/members?limit=1000`);
+
+// Missing channel_id, or a refusal, both mean "not somewhere we can see them".
+const voiceStateOf = (guildId, userId) =>
+  api(`/guilds/${guildId}/voice-states/${userId}`);
+
+// Replaces the "thinking…" placeholder a deferred reply leaves behind. The interaction
+// token authenticates this on its own and is good for 15 minutes.
+const editDeferredReply = (interactionToken, body) =>
+  api(`/webhooks/${applicationId()}/${interactionToken}/messages/@original`, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+
 // The slash commands this app registers. Kept here so the registration script and the
 // handler cannot disagree about names or option order.
 const COMMANDS = [
@@ -219,6 +254,42 @@ const COMMANDS = [
       // Type 6 is a Discord user picker, so this acts on a Discord account rather than
       // a G Points member — voice channels know nothing about app accounts.
       { name: 'user', description: 'Who to boot from voice', type: 6, required: true },
+    ],
+  },
+  {
+    name: 'deafen',
+    description: 'Server-deafen someone in voice',
+    options: [
+      { name: 'user', description: 'Who to deafen', type: 6, required: true },
+    ],
+  },
+  {
+    name: 'undeafen',
+    description: 'Undo a server deafen',
+    options: [
+      { name: 'user', description: 'Who to undeafen', type: 6, required: true },
+    ],
+  },
+  {
+    name: 'troll',
+    description: 'Server-deafen everyone in a voice channel at once',
+    options: [
+      // Type 7 is a channel picker, narrowed to voice and stage channels. Optional:
+      // with nothing picked it acts on whichever one the caller is sitting in.
+      {
+        name: 'channel', description: 'Which one (default: the one you are in)',
+        type: 7, required: false, channel_types: [2, 13],
+      },
+    ],
+  },
+  {
+    name: 'untroll',
+    description: 'Lift the deafen off everyone in a voice channel',
+    options: [
+      {
+        name: 'channel', description: 'Which one (default: the one you are in)',
+        type: 7, required: false, channel_types: [2, 13],
+      },
     ],
   },
   {
@@ -314,5 +385,6 @@ function explainFailure(result) {
 module.exports = {
   configured, appVotingEnabled, verifySignature, proposalMessage, applicationId,
   postProposal, editProposal, api, escapeMarkdown, COMMANDS, channelId, explainFailure,
-  leaderboardMessage, disconnectFromVoice,
+  leaderboardMessage, disconnectFromVoice, setDeafened, listMembers, voiceStateOf,
+  editDeferredReply,
 };

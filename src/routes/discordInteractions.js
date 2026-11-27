@@ -18,6 +18,7 @@ const MESSAGE_COMPONENT = 3;
 const AUTOCOMPLETE = 4;
 
 const PONG = 1;
+const DEFERRED_REPLY = 5; // "thinking…", edited into the real answer later
 const UPDATE_MESSAGE = 7;
 const AUTOCOMPLETE_RESULT = 8;
 const EPHEMERAL = 64; // only the clicker sees it
@@ -56,7 +57,26 @@ router.post('/', async (req, res) => {
     }
 
     if (interaction.type === APPLICATION_COMMAND) {
-      return res.json(await handleCommand(interaction));
+      const result = await handleCommand(interaction);
+
+      // Discord wants an answer within 3 seconds. A command that cannot be that quick
+      // hands back the rest of its work instead: acknowledge now, then keep doing it.
+      //
+      // The work is awaited before this handler returns, deliberately. On serverless the
+      // invocation is alive until the handler resolves, not until the response is
+      // flushed, so anything left running after an early return can simply be frozen.
+      if (result?.deferred) {
+        res.json({ type: DEFERRED_REPLY });
+        try {
+          await result.deferred();
+        } catch (err) {
+          // The reply has already gone out, so there is nothing left to tell Discord.
+          console.error('Deferred command failed: ' + err.message);
+        }
+        return;
+      }
+
+      return res.json(result);
     }
 
     if (interaction.type !== MESSAGE_COMPONENT) {
@@ -139,9 +159,225 @@ async function autocompleteMembers(interaction) {
   };
 }
 
+// Discord permission bits.
+const PERMISSIONS = {
+  ADMINISTRATOR: 1n << 3n,
+  DEAFEN_MEMBERS: 1n << 23n,
+  MOVE_MEMBERS: 1n << 24n,
+};
+
+// Shared by the voice commands.
+//
+// Deliberately gated on the caller's own DISCORD permission rather than on G Points
+// admin: if Discord already trusts you to do this by right-clicking someone, the bot
+// should not second-guess it — and it means nobody has to link an account first.
+// Interactions carry the invoking member's computed permissions as a bitfield string.
+function voiceCommandContext(interaction, needed, { target = true } = {}) {
+  const guildId = interaction.guild_id;
+  if (!guildId) return { error: reply('This only works in a server.') };
+
+  const callerDiscordId = interaction.member?.user?.id || interaction.user?.id;
+  if (!callerDiscordId) return { error: reply('Could not tell who you are.') };
+
+  let held = 0n;
+  try { held = BigInt(interaction.member?.permissions || '0'); } catch { held = 0n; }
+  const allowed = (held & PERMISSIONS.ADMINISTRATOR) !== 0n
+    || (held & PERMISSIONS[needed]) !== 0n;
+  if (!allowed) {
+    return {
+      error: reply(`You need the **${needed.replace('_', ' ').toLowerCase()}** permission `
+        + 'in this server to do that.'),
+    };
+  }
+
+  if (!target) return { guildId, callerDiscordId };
+
+  const targetId = String(
+    (interaction.data.options || []).find((o) => o.name === 'user')?.value || ''
+  );
+  if (!targetId) return { error: reply('Pick someone.') };
+
+  return { guildId, callerDiscordId, targetId };
+}
+
+// Turns a failed member edit into the thing to actually go and fix.
+function explainMemberEdit(result, permission) {
+  if (result.code === 40032) return 'They are not in a voice channel.';
+  if (result.code === 50013) {
+    return `I do not have permission. The bot needs **${permission}**, and its role has `
+      + 'to sit above theirs in the server role list.';
+  }
+  return 'That did not work. ' + bot.explainFailure(result);
+}
+
+async function handleDeafen(interaction, deaf) {
+  const ctx = voiceCommandContext(interaction, 'DEAFEN_MEMBERS');
+  if (ctx.error) return ctx.error;
+
+  if (deaf && ctx.targetId === ctx.callerDiscordId)
+    return reply('You cannot bait yourself.');
+
+  const result = await bot.setDeafened(ctx.guildId, ctx.targetId, deaf);
+  if (!result.ok) return reply(explainMemberEdit(result, 'Deafen Members'));
+
+  return {
+    type: 4,
+    data: {
+      content: deaf ? `<@${ctx.targetId}> baited` : `<@${ctx.targetId}> unbaited`,
+      // Scoped to the one person named, so this can never become an @everyone.
+      allowed_mentions: { users: [ctx.targetId] },
+    },
+  };
+}
+
+// Members whose voice state is worth asking about, and how many of those questions to
+// have in flight at once. Discord rate limits per route, and a friend-sized server is a
+// few dozen calls, so a handful of lanes is the right amount of parallel.
+const MAX_SCAN = 400;
+const LANES = 8;
+
+// How many people one /troll is allowed to deafen. One by default, so the command can be
+// tried on a real channel without emptying it; TROLL_LIMIT=all takes the whole room, or
+// set a number. Undoing is never capped — whatever /troll reached, /untroll can reach.
+function trollLimit() {
+  const raw = (process.env.TROLL_LIMIT || '').trim().toLowerCase();
+  if (raw === 'all') return Infinity;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : 1;
+}
+
+// A worker pool small enough to read: each lane takes the next item until there are none.
+// The position comes along with the item, because lanes finish out of order and a capped
+// /troll has to pick the same person every time rather than whoever answered first.
+async function inLanes(items, width, work) {
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(width, items.length) }, async () => {
+      while (next < items.length) {
+        const at = next++;
+        await work(items[at], at);
+      }
+    })
+  );
+}
+
+const followUp = (content, users = []) => ({
+  content,
+  // Never a bare parse: a command that acts on a roomful of people must not be able to
+  // turn into an @everyone.
+  allowed_mentions: users.length ? { users: users.slice(0, 100) } : { parse: [] },
+});
+
+function explainMemberList(result) {
+  if (result.code === 50001 || result.status === 403) {
+    return 'I cannot read the member list, and without it there is no way to work out '
+      + 'who is in a voice channel. Turn on **Server Members Intent** under Developer '
+      + 'Portal, Bot, Privileged Gateway Intents.';
+  }
+  return 'Could not read the member list. ' + bot.explainFailure(result);
+}
+
+// Everyone in one voice channel, deafened or undeafened in one go.
+//
+// Gated on Deafen Members exactly like /deafen: this is the same action, just repeated,
+// so it should not be easier to reach than doing it by hand. The caller is left out when
+// deafening — self-targeting is refused everywhere else too — but included when lifting
+// it, so whoever ran it can undo it on themselves as well.
+async function handleTroll(interaction, deaf) {
+  const ctx = voiceCommandContext(interaction, 'DEAFEN_MEMBERS', { target: false });
+  if (ctx.error) return ctx.error;
+
+  const picked = String(
+    (interaction.data.options || []).find((o) => o.name === 'channel')?.value || ''
+  );
+
+  // Dozens of Discord calls follow, which is well past the 3 second window.
+  return {
+    deferred: () => trollChannel({ ...ctx, picked, deaf })
+      .then((body) => bot.editDeferredReply(interaction.token, body)),
+  };
+}
+
+async function trollChannel({ guildId, callerDiscordId, picked, deaf }) {
+  let channel = picked;
+  if (!channel) {
+    const mine = await bot.voiceStateOf(guildId, callerDiscordId);
+    channel = mine.ok ? mine.body?.channel_id : null;
+    if (!channel) {
+      return followUp('Join a voice channel first, or pick one with the `channel` option.');
+    }
+  }
+
+  const members = await bot.listMembers(guildId);
+  if (!members.ok || !Array.isArray(members.body)) {
+    return followUp(explainMemberList(members));
+  }
+
+  // Bots have nothing to be deafened out of, and the caller is spared when deafening.
+  const candidates = members.body
+    .filter((m) => m.user && !m.user.bot)
+    .filter((m) => !(deaf && m.user.id === callerDiscordId))
+    .slice(0, MAX_SCAN);
+
+  // Indexed rather than pushed, so the order is the member list's and not the lanes'.
+  const found = [];
+  await inLanes(candidates, LANES, async (m, at) => {
+    const state = await bot.voiceStateOf(guildId, m.user.id);
+    if (state.ok && state.body?.channel_id === channel) found[at] = m.user.id;
+  });
+  const inChannel = found.filter(Boolean);
+
+  if (!inChannel.length) {
+    return followUp(
+      deaf ? `Nobody to bait in <#${channel}>.` : `Nobody is in <#${channel}>.`
+    );
+  }
+
+  const present = deaf ? inChannel.slice(0, trollLimit()) : inChannel;
+
+  const done = [];
+  const refused = [];
+  await inLanes(present, LANES, async (id) => {
+    const result = await bot.setDeafened(guildId, id, deaf);
+    (result.ok ? done : refused).push({ id, result });
+  });
+
+  if (!done.length) {
+    return followUp(
+      (deaf ? 'Could not bait anyone. ' : 'Could not lift it off anyone. ')
+      + explainMemberEdit(refused[0].result, 'Deafen Members')
+    );
+  }
+
+  const ids = done.map((d) => d.id);
+  // Named rather than counted while the list is short, which is the whole point of it.
+  const named = ids.length <= 20
+    ? ids.map((id) => `<@${id}>`).join(' ')
+    : `${ids.length} of them`;
+
+  const skipped = refused.length
+    ? `\n(${refused.length} out of reach — the bot's role has to sit above theirs.)`
+    : '';
+
+  // Otherwise a /troll that quietly hit one of five looks broken rather than capped.
+  const capped = present.length < inChannel.length
+    ? `\n(${present.length} of ${inChannel.length} in there — set TROLL_LIMIT=all to take the room.)`
+    : '';
+
+  return followUp(
+    (deaf ? `🔇 ${named} baited in <#${channel}>` : `🔊 ${named} unbaited in <#${channel}>`)
+      + capped + skipped,
+    ids
+  );
+}
+
 async function handleCommand(interaction) {
   if (interaction.data?.name === 'leaderboard') return handleLeaderboard(interaction);
+  if (interaction.data?.name === 'troll') return handleTroll(interaction, true);
+  if (interaction.data?.name === 'untroll') return handleTroll(interaction, false);
   if (interaction.data?.name === 'kick') return handleKick(interaction);
+  if (interaction.data?.name === 'deafen') return handleDeafen(interaction, true);
+  if (interaction.data?.name === 'undeafen') return handleDeafen(interaction, false);
   if (interaction.data?.name !== 'propose') return reply('Unknown command.');
 
   const discordId = interaction.member?.user?.id || interaction.user?.id;
@@ -242,54 +478,19 @@ async function handleCommand(interaction) {
 // repeatedly, which stops being a joke quickly. Drop the admin check below if you want
 // the whole group to have it.
 async function handleKick(interaction) {
-  const guildId = interaction.guild_id;
-  if (!guildId) return reply('This only works in a server.');
+  const ctx = voiceCommandContext(interaction, 'MOVE_MEMBERS');
+  if (ctx.error) return ctx.error;
 
-  const callerDiscordId = interaction.member?.user?.id || interaction.user?.id;
-  if (!callerDiscordId) return reply('Could not tell who you are.');
+  if (ctx.targetId === ctx.callerDiscordId) return reply('You cannot bait yourself.');
 
-  const { rows: caller } = await query(
-    'SELECT id, display_name, is_admin FROM users WHERE discord_id = $1', [callerDiscordId]
-  );
+  const result = await bot.disconnectFromVoice(ctx.guildId, ctx.targetId);
+  if (!result.ok) return reply(explainMemberEdit(result, 'Move Members'));
 
-  if (!caller[0]) {
-    const code = await issueLinkCode(callerDiscordId);
-    const site = (process.env.APP_URL || '').replace(/\/$/, '');
-    return reply(
-      'Link your Discord to your G Points account first.\n\n'
-      + `Go to ${site ? site + '/account' : 'the app, Account page'} and enter:\n`
-      + `**${code}**\n\nGood for 15 minutes.`
-    );
-  }
-  if (!caller[0].is_admin) return reply('Only admins can use this one.');
-
-  const targetId = String(
-    (interaction.data.options || []).find((o) => o.name === 'user')?.value || ''
-  );
-  if (!targetId) return reply('Pick someone.');
-  if (targetId === callerDiscordId) return reply('You cannot bait yourself.');
-
-  const result = await bot.disconnectFromVoice(guildId, targetId);
-
-  if (!result.ok) {
-    // 40032 is Discord's "target user is not connected to voice".
-    if (result.code === 40032) return reply('They are not in a voice channel.');
-    if (result.code === 50013) {
-      return reply(
-        'I do not have permission to move them. The bot needs **Move Members**, and its '
-        + 'role has to sit above theirs in the server role list.'
-      );
-    }
-    return reply('Could not disconnect them. ' + bot.explainFailure(result));
-  }
-
-  // The one place this app deliberately pings someone. Scoped to just this user, so a
-  // command can never be turned into an @everyone.
   return {
     type: 4,
     data: {
-      content: `<@${targetId}> baited`,
-      allowed_mentions: { users: [targetId] },
+      content: `<@${ctx.targetId}> baited`,
+      allowed_mentions: { users: [ctx.targetId] },
     },
   };
 }

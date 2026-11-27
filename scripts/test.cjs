@@ -1467,7 +1467,7 @@ async function main() {
     const res = await fetch(base + '/api/discord/interactions', signIt({
       type: 2, guild_id: '1360419275528994916', channel_id: '777888999',
       data: { name: 'kick', options: [{ name: 'user', value: '424242424242' }] },
-      member: { user: { id: '888111222' } },
+      member: { user: { id: '888111222' }, permissions: '8' },
     }));
     const body = await res.json();
     global.fetch = realFetch;
@@ -1486,7 +1486,7 @@ async function main() {
       'must ping the target and nobody else');
   });
 
-  await check('/kick is admin only and refuses self-targeting', async () => {
+  await check('/kick needs the Discord permission and refuses self-targeting', async () => {
     const realFetch = global.fetch;
     let moved = false;
     global.fetch = async (url, opts) => {
@@ -1494,23 +1494,283 @@ async function main() {
       return realFetch(url, opts);
     };
 
-    // carol is linked but not an admin.
-    const asCarol = await fetch(base + '/api/discord/interactions', signIt({
+    // Someone with no relevant permission — the gate is Discord's, not G Points'.
+    const noPerm = await fetch(base + '/api/discord/interactions', signIt({
       type: 2, guild_id: '1360419275528994916',
       data: { name: 'kick', options: [{ name: 'user', value: '424242424242' }] },
-      member: { user: { id: '999000111222' } },
+      member: { user: { id: '999000111222' }, permissions: '0' },
     }));
-    assert.match((await asCarol.json()).data.content, /only admins/i);
-    assert.strictEqual(moved, false, 'a non-admin must not move anyone');
+    assert.match((await noPerm.json()).data.content, /move members/i);
+    assert.strictEqual(moved, false, 'without the permission nobody gets moved');
+
+    // Move Members alone (no Administrator) is enough.
+    const justMove = await fetch(base + '/api/discord/interactions', signIt({
+      type: 2, guild_id: '1360419275528994916',
+      data: { name: 'kick', options: [{ name: 'user', value: '424242424242' }] },
+      member: { user: { id: '999000111222' }, permissions: String(1n << 24n) },
+    }));
+    assert.match((await justMove.json()).data.content, /baited/,
+      'Move Members on its own should be accepted');
 
     const self = await fetch(base + '/api/discord/interactions', signIt({
       type: 2, guild_id: '1360419275528994916',
       data: { name: 'kick', options: [{ name: 'user', value: '888111222' }] },
-      member: { user: { id: '888111222' } },
+      member: { user: { id: '888111222' }, permissions: '8' },
     }));
     assert.match((await self.json()).data.content, /cannot bait yourself/i);
 
     global.fetch = realFetch;
+  });
+
+  await check('/deafen and /undeafen set the flag and ping only the target', async () => {
+    const calls = [];
+    const realFetch = global.fetch;
+    global.fetch = async (url, opts) => {
+      if (String(url).includes('discord.com/api/')) {
+        calls.push(JSON.parse(opts.body));
+        return { ok: true, status: 204, text: async () => '' };
+      }
+      return realFetch(url, opts);
+    };
+
+    const run = async (name) => {
+      const r = await fetch(base + '/api/discord/interactions', signIt({
+        type: 2, guild_id: '1360419275528994916',
+        data: { name, options: [{ name: 'user', value: '424242424242' }] },
+        member: { user: { id: '888111222' }, permissions: '8' },
+      }));
+      return (await r.json()).data;
+    };
+
+    const on = await run('deafen');
+    assert.deepStrictEqual(calls[0], { deaf: true }, 'deafen must set deaf true');
+    assert.strictEqual(on.content, '<@424242424242> baited');
+    assert.deepStrictEqual(on.allowed_mentions, { users: ['424242424242'] });
+
+    const off = await run('undeafen');
+    assert.deepStrictEqual(calls[1], { deaf: false }, 'undeafen must set deaf false');
+    assert.strictEqual(off.content, '<@424242424242> unbaited');
+
+    global.fetch = realFetch;
+  });
+
+  await check('/deafen needs Deafen Members, not just any permission', async () => {
+    const realFetch = global.fetch;
+    let called = false;
+    global.fetch = async (url, opts) => {
+      if (String(url).includes('discord.com/api/')) { called = true; return { ok: true, status: 204, text: async () => '' }; }
+      return realFetch(url, opts);
+    };
+
+    // Move Members is enough for /kick but not for /deafen.
+    const wrongPerm = await fetch(base + '/api/discord/interactions', signIt({
+      type: 2, guild_id: '1360419275528994916',
+      data: { name: 'deafen', options: [{ name: 'user', value: '424242424242' }] },
+      member: { user: { id: '999000111222' }, permissions: String(1n << 24n) },
+    }));
+    assert.match((await wrongPerm.json()).data.content, /deafen members/i);
+    assert.strictEqual(called, false, 'the wrong permission must not deafen anyone');
+
+    // Undeafening yourself is allowed — only deafening yourself is refused.
+    global.fetch = realFetch;
+  });
+
+  // /troll answers Discord straight away and does the work afterwards, so a stub server
+  // has to wait for the follow-up edit rather than reading the first response.
+  //
+  // Voice channel VC1 holds two people plus the caller and a bot; VC2 holds one more.
+  function trollWorld() {
+    const members = [
+      { user: { id: '111', username: 'alpha' } },
+      { user: { id: '222', username: 'beta' } },
+      { user: { id: '333', username: 'gamma' } },
+      { user: { id: '444', username: 'delta' } },
+      { user: { id: '999', username: 'botty', bot: true } },
+      { user: { id: '888111222', username: 'nick' } },
+    ];
+    const channels = { 111: 'VC1', 222: 'VC1', 333: 'VC2', 999: 'VC1', 888111222: 'VC1' };
+
+    const patched = [];
+    let followUp = null;
+    const realFetch = global.fetch;
+
+    const json = (body) => ({ ok: true, status: 200, text: async () => JSON.stringify(body) });
+
+    global.fetch = async (url, opts = {}) => {
+      const u = String(url);
+      if (!u.includes('discord.com/api/')) return realFetch(url, opts);
+
+      if (u.includes('/messages/@original')) {
+        followUp = { url: u, body: JSON.parse(opts.body) };
+        return json({});
+      }
+      if (u.includes('/members?limit=1000')) return json(members);
+
+      const voice = u.match(/\/voice-states\/(\d+)$/);
+      if (voice) {
+        const channel = channels[voice[1]];
+        // Discord 404s rather than returning an empty state for someone not in voice.
+        if (!channel) return { ok: false, status: 404, text: async () => JSON.stringify({ code: 10065 }) };
+        return json({ channel_id: channel, user_id: voice[1] });
+      }
+
+      const member = u.match(/\/members\/(\d+)$/);
+      if (member && opts.method === 'PATCH') {
+        patched.push({ id: member[1], body: JSON.parse(opts.body) });
+        return { ok: true, status: 204, text: async () => '' };
+      }
+      return json({});
+    };
+
+    return {
+      patched,
+      restore: () => { global.fetch = realFetch; },
+      // The HTTP response comes back before the work is finished, by design.
+      settled: async () => {
+        for (let i = 0; i < 400 && !followUp; i++) await new Promise((r) => setTimeout(r, 5));
+        assert.ok(followUp, 'the deferred reply was never edited into an answer');
+        return followUp;
+      },
+    };
+  }
+
+  const troll = (name, member, options = []) =>
+    fetch(base + '/api/discord/interactions', signIt({
+      type: 2, guild_id: '1360419275528994916', channel_id: '777888999',
+      token: 'interaction-token-abc',
+      data: { name, options },
+      member,
+    }));
+
+  await check('/troll stops at TROLL_LIMIT and says that it did', async () => {
+    process.env.DISCORD_APPLICATION_ID = '555000';
+    process.env.TROLL_LIMIT = '1';
+    const world = trollWorld();
+
+    const res = await troll('troll', { user: { id: '888111222' }, permissions: '8' });
+    assert.deepStrictEqual(await res.json(), { type: 5 },
+      'must acknowledge inside the 3 second window, not answer late');
+
+    const followUp = await world.settled();
+    world.restore();
+    delete process.env.DISCORD_APPLICATION_ID;
+    delete process.env.TROLL_LIMIT;
+
+    assert.match(followUp.url, /\/webhooks\/555000\/interaction-token-abc\/messages\/@original$/,
+      'the answer must edit the placeholder this interaction left');
+
+    // VC1 holds 111, 222, the bot and the caller. A limit of one takes the first human
+    // in member-list order and leaves the rest alone.
+    assert.deepStrictEqual(world.patched.map((c) => c.id), ['111'],
+      'one means one, and the same one every time');
+    assert.strictEqual(world.patched[0].body.deaf, true);
+
+    assert.match(followUp.body.content, /<@111>/);
+    assert.doesNotMatch(followUp.body.content, /<@222>/, 'nobody else should be named');
+    assert.match(followUp.body.content, /1 of 2 in there/,
+      'a capped troll has to look capped, not broken');
+    assert.match(followUp.body.content, /TROLL_LIMIT=all/, 'and say how to lift it');
+    assert.deepStrictEqual(followUp.body.allowed_mentions, { users: ['111'] },
+      'pings exactly the person it acted on, never @everyone');
+  });
+
+  await check('TROLL_LIMIT=all takes the whole channel and nobody outside it', async () => {
+    process.env.DISCORD_APPLICATION_ID = '555000';
+    process.env.TROLL_LIMIT = 'all';
+    const world = trollWorld();
+
+    await troll('troll', { user: { id: '888111222' }, permissions: '8' });
+    const followUp = await world.settled();
+    world.restore();
+    delete process.env.DISCORD_APPLICATION_ID;
+    delete process.env.TROLL_LIMIT;
+
+    assert.deepStrictEqual(world.patched.map((c) => c.id).sort(), ['111', '222'],
+      'only the humans in VC1 — not VC2, not the bot, not the caller');
+    assert.ok(world.patched.every((c) => c.body.deaf === true), 'every one of them deafened');
+    assert.doesNotMatch(followUp.body.content, /of 2 in there/,
+      'nothing was held back, so there is nothing to explain');
+    assert.deepStrictEqual(followUp.body.allowed_mentions, { users: ['111', '222'] });
+  });
+
+  await check('a missing or nonsense TROLL_LIMIT means one, not everyone', async () => {
+    process.env.DISCORD_APPLICATION_ID = '555000';
+    process.env.TROLL_LIMIT = 'banana';
+    const world = trollWorld();
+
+    await troll('troll', { user: { id: '888111222' }, permissions: '8' });
+    await world.settled();
+    world.restore();
+    delete process.env.DISCORD_APPLICATION_ID;
+    delete process.env.TROLL_LIMIT;
+
+    assert.deepStrictEqual(world.patched.map((c) => c.id), ['111'],
+      'a value nobody can read must fail safe, not open the floodgates');
+  });
+
+  await check('/untroll is never capped, and reaches the caller too', async () => {
+    process.env.DISCORD_APPLICATION_ID = '555000';
+    // Deliberately left at one: a cap on the joke must not become a cap on the undo.
+    process.env.TROLL_LIMIT = '1';
+    const world = trollWorld();
+
+    await troll('untroll', { user: { id: '888111222' }, permissions: '8' });
+    const followUp = await world.settled();
+    world.restore();
+    delete process.env.DISCORD_APPLICATION_ID;
+
+    delete process.env.TROLL_LIMIT;
+
+    const ids = world.patched.map((c) => c.id).sort();
+    assert.deepStrictEqual(ids, ['111', '222', '888111222'],
+      'everyone in there, caller included, whatever TROLL_LIMIT says');
+    assert.ok(world.patched.every((c) => c.body.deaf === false), 'deaf must be cleared');
+    assert.match(followUp.body.content, /unbaited/);
+  });
+
+  await check('/troll needs Deafen Members and someone to troll', async () => {
+    const world = trollWorld();
+
+    const noPerm = await troll('troll', { user: { id: '999000111222' }, permissions: '0' });
+    const refusal = await noPerm.json();
+    assert.match(refusal.data.content, /deafen members/i);
+    assert.strictEqual(refusal.data.flags, 64, 'and refuse privately');
+    assert.strictEqual(world.patched.length, 0, 'nobody gets deafened without the permission');
+
+    // Someone with the permission but not sitting in a voice channel themselves.
+    await troll('troll', { user: { id: '444' }, permissions: String(1n << 23n) });
+    const followUp = await world.settled();
+    world.restore();
+
+    assert.match(followUp.body.content, /join a voice channel/i,
+      'should say what to do rather than silently doing nothing');
+    assert.strictEqual(world.patched.length, 0);
+  });
+
+  await check('/troll says what to fix when it cannot read the member list', async () => {
+    const realFetch = global.fetch;
+    let followUp = null;
+    global.fetch = async (url, opts = {}) => {
+      const u = String(url);
+      if (!u.includes('discord.com/api/')) return realFetch(url, opts);
+      if (u.includes('/messages/@original')) {
+        followUp = JSON.parse(opts.body);
+        return { ok: true, status: 200, text: async () => '{}' };
+      }
+      if (u.includes('/voice-states/')) {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ channel_id: 'VC1' }) };
+      }
+      // What Discord says when the Server Members Intent is switched off.
+      return { ok: false, status: 403, text: async () => JSON.stringify({ code: 50001, message: 'Missing Access' }) };
+    };
+
+    await troll('troll', { user: { id: '888111222' }, permissions: '8' });
+    for (let i = 0; i < 400 && !followUp; i++) await new Promise((r) => setTimeout(r, 5));
+    global.fetch = realFetch;
+
+    assert.ok(followUp, 'a failure still has to replace the placeholder');
+    assert.match(followUp.content, /server members intent/i,
+      'name the switch to flip, not just that it failed');
   });
 
   await check('/kick explains why it failed rather than going quiet', async () => {
@@ -1527,7 +1787,7 @@ async function main() {
       const r = await fetch(base + '/api/discord/interactions', signIt({
         type: 2, guild_id: '1360419275528994916',
         data: { name: 'kick', options: [{ name: 'user', value: '424242424242' }] },
-        member: { user: { id: '888111222' } },
+        member: { user: { id: '888111222' }, permissions: '8' },
       }));
       return (await r.json()).data.content;
     };

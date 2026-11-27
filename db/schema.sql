@@ -1,12 +1,13 @@
 -- G Points schema. Safe to re-run: drops and recreates everything.
 -- Applied against local Postgres for dev, and against Neon for production.
 
-DROP VIEW  IF EXISTS ledger            CASCADE;
-DROP TABLE IF EXISTS season_standings  CASCADE;
-DROP TABLE IF EXISTS votes             CASCADE;
-DROP TABLE IF EXISTS proposals         CASCADE;
-DROP TABLE IF EXISTS seasons           CASCADE;
-DROP TABLE IF EXISTS users             CASCADE;
+DROP VIEW  IF EXISTS ledger             CASCADE;
+DROP TABLE IF EXISTS discord_link_codes CASCADE;
+DROP TABLE IF EXISTS season_standings   CASCADE;
+DROP TABLE IF EXISTS votes              CASCADE;
+DROP TABLE IF EXISTS proposals          CASCADE;
+DROP TABLE IF EXISTS seasons            CASCADE;
+DROP TABLE IF EXISTS users              CASCADE;
 
 CREATE TABLE users (
   id            serial PRIMARY KEY,

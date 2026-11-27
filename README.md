@@ -18,7 +18,8 @@ Postgres · **79 end-to-end tests** · deployed free on Vercel and Neon
 | **Voting** | Three neutral accepts carries it; three rejects kills it; open proposals expire after 7 days |
 | **Leaderboards** | Week, month, year and all time, with a live countdown to the next rollover |
 | **Hall of Fame** | G of the Week, G of the Month, G of the Year |
-| **Discord** | Proposals post with vote buttons; `/propose`, `/leaderboard` and `/kick` slash commands |
+| **Discord** | Proposals post with vote buttons; `/propose` and `/leaderboard` slash commands |
+| **Voice** | `/kick`, `/deafen`, `/undeafen`, and `/troll` — deafen everyone in a voice channel at once, `/untroll` to lift it |
 | **Admin** | Edit members, adjust points, reverse transactions, close the season with a full archive |
 
 Built with no framework and no build step — plain HTML and CSS on the front, Express and
@@ -250,6 +251,27 @@ old transaction can retroactively change who won a past week.
 | `DISCORD_CHANNEL_ID` | Which channel proposals are posted to. |
 | `APP_VOTING` | `on`/`off`. Defaults to off once Discord voting is configured. |
 | `APP_URL` | Optional. Your live URL, so Discord messages link to the voting page. |
+| `TROLL_LIMIT` | How many people one `/troll` may deafen. Default `1`. A number, or `all` for the whole channel. `/untroll` is never capped. |
 
 All of them are read **at startup**. Change one and you must restart locally, or redeploy on
 Vercel.
+
+### The voice commands
+
+`/kick`, `/deafen` and `/troll` need permissions on the bot's own role, and the bot's role
+has to sit **above** the people it acts on in the server's role list — Discord refuses a
+member edit from below, whatever the bot is allowed to do.
+
+| Command | Bot needs |
+|---|---|
+| `/kick` | **Move Members** |
+| `/deafen`, `/undeafen`, `/troll`, `/untroll` | **Deafen Members** |
+| `/troll`, `/untroll` | plus **Server Members Intent** (Developer Portal → Bot → Privileged Gateway Intents) |
+
+Each one is gated on the *caller* holding the same Discord permission, so if Discord already
+trusts you to do it by right-clicking someone, the bot does not second-guess it — and nobody
+has to link a G Points account first.
+
+`/troll` needs the members intent because there is no REST endpoint that lists who is in a
+voice channel: it reads the member list and asks about each one, which takes longer than
+Discord's three-second reply window, so it acknowledges first and edits the answer in.
