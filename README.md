@@ -6,7 +6,7 @@ accept it** — and neither the proposer nor the person receiving gets a vote. V
 happens in Discord, on the proposal itself.
 
 **Live:** [gpoints-app.vercel.app](https://gpoints-app.vercel.app) · Node + Express +
-Postgres · **79 end-to-end tests** · deployed free on Vercel and Neon
+Postgres · **85 end-to-end tests** · deployed free on Vercel and Neon
 
 ---
 
@@ -19,7 +19,8 @@ Postgres · **79 end-to-end tests** · deployed free on Vercel and Neon
 | **Leaderboards** | Week, month, year and all time, with a live countdown to the next rollover |
 | **Hall of Fame** | G of the Week, G of the Month, G of the Year |
 | **Discord** | Proposals post with vote buttons; `/propose` and `/leaderboard` slash commands |
-| **Voice** | `/kick`, `/deafen`, `/undeafen`, and `/troll` — deafen everyone in a voice channel at once, `/untroll` to lift it |
+| **Voice** | `/kick` to boot someone from voice, `/deafen` and `/undeafen` |
+| **Anti-mute** | `/protect` undoes any server mute or deafen put on you, within about a second |
 | **Admin** | Edit members, adjust points, reverse transactions, close the season with a full archive |
 
 Built with no framework and no build step — plain HTML and CSS on the front, Express and
@@ -76,7 +77,7 @@ stored in `./.pglite`, no server and no password needed. Set `DATABASE_URL` and 
 to normal Postgres. Same code either way.
 
 ```bash
-npm test                  # 79 end-to-end tests
+npm test                  # 85 end-to-end tests
 ```
 
 Two things to know about the local PGlite database:
@@ -215,7 +216,9 @@ src/discord.js        optional Discord webhook notifications
 src/discordBot.js     Discord application: buttons, and verifying clicks
 src/voting.js         the voting rules, shared by the app and Discord
 src/standings.js      the leaderboard query, shared by the page and Discord
-scripts/test.cjs      79 end-to-end tests
+src/voiceGuard.js     the /protect rules: server mute yes, self-mute no
+scripts/protect-worker.cjs  the one always-on piece — watches voice over a gateway socket
+scripts/test.cjs      85 end-to-end tests
 ```
 
 **There are no stored balances anywhere.** Approved proposals *are* the ledger, so all four
@@ -251,30 +254,67 @@ old transaction can retroactively change who won a past week.
 | `DISCORD_CHANNEL_ID` | Which channel proposals are posted to. |
 | `APP_VOTING` | `on`/`off`. Defaults to off once Discord voting is configured. |
 | `APP_URL` | Optional. Your live URL, so Discord messages link to the voting page. |
-| `TROLL_LIMIT` | How many people one `/troll` may deafen. Default `1`. A number, or `all` for the whole channel. `/untroll` is never capped. |
 
 All of them are read **at startup**. Change one and you must restart locally, or redeploy on
 Vercel.
 
 ### The voice commands
 
-`/kick`, `/deafen` and `/troll` need permissions on the bot's own role, and the bot's role
-has to sit **above** the people it acts on in the server's role list — Discord refuses a
-member edit from below, whatever the bot is allowed to do.
+`/kick` and `/deafen` need permissions on the bot’s own role, and the bot’s role has to
+sit **above** the people it acts on in the server’s role list — Discord refuses a member
+edit from below, whatever the bot is allowed to do.
 
 | Command | Bot needs |
 |---|---|
 | `/kick` | **Move Members** |
-| `/deafen`, `/undeafen`, `/troll`, `/untroll` | **Deafen Members** |
-| `/troll`, `/untroll` | plus **Server Members Intent** (Developer Portal → Bot → Privileged Gateway Intents) |
+| `/deafen`, `/undeafen` | **Deafen Members** |
 
-Each one is gated on the *caller* holding the same Discord permission, so if Discord already
-trusts you to do it by right-clicking someone, the bot does not second-guess it — and nobody
-has to link a G Points account first.
+Each one is gated on the *caller* holding the same Discord permission, so if Discord
+already trusts you to do it by right-clicking someone, the bot does not second-guess it —
+and nobody has to link a G Points account first.
 
-`/troll` needs the members intent because there is no REST endpoint that lists who is in a
-voice channel: it reads the member list and asks about each one. All of it has to fit in
-Discord's three-second reply window — a deferred "thinking…" reply is the usual way around
-that, but there is nowhere to run the rest of the work, because on Vercel the invocation
-ends when the response is flushed and the follow-up never happens. So the scan is budgeted
-instead: it stops once it has enough people, or when the time is nearly up, and says so.
+### `/protect`, and the one process that is not serverless
+
+Everyone in a small server tends to have **Deafen Members**, which means everyone can
+silence everyone. `/protect` takes that back: while you are protected, a server mute or
+deafen is undone within about a second. Muting *yourself* still works — the bot only
+reverses what other people do to you, and telling those two apart is the whole trick
+(`deaf` versus `self_deaf` on the voice state).
+
+`/protect` and `/unprotect` are ordinary slash commands and run on Vercel like the rest.
+All they do is write a row:
+
+```
+/protect            protect yourself
+/protect @someone   protect someone else — a favour anyone may do
+/unprotect          drop your own protection
+```
+
+Taking **someone else's** protection off needs Administrator. Without that rule, whoever
+wanted you muted would just `/unprotect` you first.
+
+Acting on those rows is a separate program, and it has to be, because **Discord will not
+tell an HTTPS endpoint that somebody got muted.** It only pushes voice events down a
+gateway connection, to a process that stays connected — and Vercel has none: it wakes the
+app for a request and freezes it again. So the watcher runs wherever you can keep a socket
+open (a Raspberry Pi, an old laptop, Railway, Fly):
+
+```bash
+npm run protect
+```
+
+It is event-driven, not a loop. Polling "is he still muted?" every second would cost 60
+lookups a minute per person, and Discord allows about 15 before it starts refusing, so a
+poll is rate limited into uselessness. A `VOICE_STATE_UPDATE` arrives the moment someone
+is muted and carries the new state with it, so the watcher reacts in about a tenth of a
+second and spends nothing at all until something happens. It uses no websocket library —
+Node has had a global `WebSocket` since 22, and the gateway is four opcodes.
+
+Two limits worth knowing before you rely on it:
+
+- **Role order still decides everything.** The bot can only reverse a mute from someone it
+  outranks. If its role sits below theirs, the undo fails with `50013` and the watcher
+  says so in its log.
+- **It will not fight forever.** Six undos a minute per person, then it stands down, posts
+  one message saying so, and lets the mute stand. Losing the argument loudly beats
+  spinning silently against Discord's rate limits.

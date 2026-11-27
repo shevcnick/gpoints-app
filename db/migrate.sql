@@ -91,3 +91,12 @@ END $$;
 
 -- Frozen season totals are sums, so they need the same width as the live ones.
 ALTER TABLE season_standings ALTER COLUMN total TYPE bigint;
+
+-- /protect: the voice watcher reads this to know whose server mute or deafen to undo.
+CREATE TABLE IF NOT EXISTS voice_protections (
+  guild_id   text NOT NULL,
+  discord_id text NOT NULL,
+  added_by   text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (guild_id, discord_id)
+);

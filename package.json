@@ -10,7 +10,8 @@
     "test": "node scripts/test.cjs",
     "use-neon": "node scripts/use-neon.cjs",
     "db:migrate": "node scripts/migrate.cjs",
-    "discord:register": "node scripts/register-commands.cjs"
+    "discord:register": "node scripts/register-commands.cjs",
+    "protect": "node scripts/protect-worker.cjs"
   },
   "keywords": [],
   "author": "",

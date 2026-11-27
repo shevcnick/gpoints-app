@@ -3,6 +3,7 @@
 
 DROP VIEW  IF EXISTS ledger             CASCADE;
 DROP TABLE IF EXISTS discord_link_codes CASCADE;
+DROP TABLE IF EXISTS voice_protections  CASCADE;
 DROP TABLE IF EXISTS season_standings   CASCADE;
 DROP TABLE IF EXISTS votes              CASCADE;
 DROP TABLE IF EXISTS proposals          CASCADE;
@@ -34,6 +35,17 @@ CREATE TABLE discord_link_codes (
   discord_id text PRIMARY KEY,
   code       text NOT NULL,
   expires_at timestamptz NOT NULL
+);
+
+-- Who the voice watcher keeps un-muted. Keyed on the Discord account rather than a
+-- G Points user: voice channels know nothing about app accounts, and nobody should have to
+-- link one to stop being muted. added_by is who ran /protect, kept so the callout can say.
+CREATE TABLE voice_protections (
+  guild_id   text NOT NULL,
+  discord_id text NOT NULL,
+  added_by   text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (guild_id, discord_id)
 );
 
 CREATE TABLE proposals (

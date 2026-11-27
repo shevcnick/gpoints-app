@@ -1575,168 +1575,128 @@ async function main() {
     global.fetch = realFetch;
   });
 
-  // A stub Discord where voice channel VC1 holds 111, 222, a bot and the caller, and VC2
-  // holds 333. /troll answers inside the interaction response, so the assertions read that
-  // rather than waiting on a follow-up edit — there is nowhere on serverless to run one.
-  function trollWorld() {
-    const members = [
-      { user: { id: '111', username: 'alpha' } },
-      { user: { id: '222', username: 'beta' } },
-      { user: { id: '333', username: 'gamma' } },
-      { user: { id: '444', username: 'delta' } },
-      { user: { id: '999', username: 'botty', bot: true } },
-      { user: { id: '888111222', username: 'nick' } },
-    ];
-    const channels = { 111: 'VC1', 222: 'VC1', 333: 'VC2', 999: 'VC1', 888111222: 'VC1' };
+  // --- /protect ---------------------------------------------------------------
+  //
+  // The command only writes a row. What acts on that row is scripts/protect-worker.cjs,
+  // whose rules live in src/voiceGuard.js so they can be checked without a websocket.
 
-    const patched = [];
-    const realFetch = global.fetch;
-    const json = (body) => ({ ok: true, status: 200, text: async () => JSON.stringify(body) });
+  await check('a server mute or deafen is undone, a self-mute is left alone', async () => {
+    const { reversal } = require('../src/voiceGuard');
 
-    global.fetch = async (url, opts = {}) => {
-      const u = String(url);
-      if (!u.includes('discord.com/api/')) return realFetch(url, opts);
+    assert.deepStrictEqual(reversal({ channel_id: 'VC1', deaf: true }), { deaf: false },
+      'a server deafen is something done TO you');
+    assert.deepStrictEqual(reversal({ channel_id: 'VC1', mute: true }), { mute: false });
+    assert.deepStrictEqual(
+      reversal({ channel_id: 'VC1', deaf: true, mute: true }),
+      { deaf: false, mute: false },
+      'both at once should be one edit, not two'
+    );
 
-      if (u.includes('/members?limit=1000')) return json(members);
+    // The whole point of telling the two apart.
+    assert.strictEqual(reversal({ channel_id: 'VC1', self_deaf: true, self_mute: true }), null,
+      'muting yourself is your business');
+    assert.strictEqual(reversal({ channel_id: 'VC1' }), null, 'nothing wrong, nothing to do');
+    assert.strictEqual(reversal({ channel_id: null, deaf: true }), null,
+      'someone leaving voice is not someone to unmute');
+    assert.strictEqual(reversal(null), null);
+  });
 
-      const voice = u.match(/\/voice-states\/(\d+)$/);
-      if (voice) {
-        const channel = channels[voice[1]];
-        // Discord 404s rather than returning an empty state for someone not in voice.
-        if (!channel) return { ok: false, status: 404, text: async () => JSON.stringify({ code: 10065 }) };
-        return json({ channel_id: channel, user_id: voice[1] });
-      }
+  await check('the watcher stops arguing after six rounds a minute', async () => {
+    const { throttle } = require('../src/voiceGuard');
 
-      const member = u.match(/\/members\/(\d+)$/);
-      if (member && opts.method === 'PATCH') {
-        patched.push({ id: member[1], body: JSON.parse(opts.body) });
-        return { ok: true, status: 204, text: async () => '' };
-      }
-      return json({});
+    let clock = 1_000_000;
+    const limiter = throttle({ perMinute: 6, now: () => clock });
+
+    for (let i = 0; i < 6; i++) {
+      assert.strictEqual(limiter.consume('g:alice'), 'go', 'round ' + (i + 1) + ' should go ahead');
+    }
+    assert.strictEqual(limiter.consume('g:alice'), 'quit', 'then it concedes, out loud');
+    assert.strictEqual(limiter.consume('g:alice'), 'hush', 'and does not say so again');
+    assert.strictEqual(limiter.consume('g:bob'), 'go', 'one mute war must not stop the others');
+
+    // A minute later the argument can start over.
+    clock += 61_000;
+    assert.strictEqual(limiter.consume('g:alice'), 'go');
+  });
+
+  await check('/protect and /unprotect add and remove a row', async () => {
+    const rows = () => countRows('SELECT count(*)::int c FROM voice_protections');
+    assert.strictEqual(await rows(), 0, 'nothing protected to begin with');
+
+    const run = async (name, member, options = []) => {
+      const res = await fetch(base + '/api/discord/interactions', signIt({
+        type: 2, guild_id: '1360419275528994916', channel_id: '777888999',
+        data: { name, options },
+        member,
+      }));
+      return (await res.json()).data;
     };
 
-    return { patched, restore: () => { global.fetch = realFetch; } };
-  }
+    // A bare /protect covers whoever ran it.
+    const mine = await run('protect', { user: { id: '888111222' }, permissions: '0' });
+    assert.match(mine.content, /you are protected/i);
+    assert.strictEqual(mine.flags, 64, 'privately — it is not a callout');
+    assert.match(mine.content, /muting yourself still works/i,
+      'say what it does NOT do, or the first self-mute looks like a bug');
 
-  const troll = async (name, member, options = []) => {
-    const res = await fetch(base + '/api/discord/interactions', signIt({
-      type: 2, guild_id: '1360419275528994916', channel_id: '777888999',
-      token: 'interaction-token-abc',
-      data: { name, options },
-      member,
-    }));
-    return res.json();
-  };
+    const { rows: saved } = await query(
+      'SELECT guild_id, discord_id, added_by FROM voice_protections'
+    );
+    assert.deepStrictEqual(saved[0], {
+      guild_id: '1360419275528994916', discord_id: '888111222', added_by: '888111222',
+    });
 
-  await check('/troll answers in one shot, never a deferred placeholder', async () => {
-    // A deferred reply (type 5) would strand the interaction at "thinking…": on Vercel
-    // the invocation ends when the response is flushed, so the follow-up never runs.
-    process.env.TROLL_LIMIT = '1';
-    const world = trollWorld();
-    const body = await troll('troll', { user: { id: '888111222' }, permissions: '8' });
-    world.restore();
-    delete process.env.TROLL_LIMIT;
+    // Protecting someone else is a favour anyone may do.
+    await run('protect', { user: { id: '999000111222' }, permissions: '0' },
+      [{ name: 'user', value: '424242424242' }]);
+    assert.strictEqual(await rows(), 2);
 
-    assert.strictEqual(body.type, 4, 'must be a real reply, not an acknowledgement');
-    assert.notStrictEqual(body.data.flags, 64, 'and the callout should be public');
-    assert.ok(body.data.content, 'with the answer already in it');
+    // Running it twice is not an error, and records who asked most recently.
+    await run('protect', { user: { id: '888111222' }, permissions: '0' },
+      [{ name: 'user', value: '424242424242' }]);
+    assert.strictEqual(await rows(), 2, 'the second /protect must not add a duplicate');
+    const { rows: who } = await query(
+      "SELECT added_by FROM voice_protections WHERE discord_id = '424242424242'"
+    );
+    assert.strictEqual(who[0].added_by, '888111222');
+
+    // Dropping your own protection needs nothing.
+    const gone = await run('unprotect', { user: { id: '888111222' }, permissions: '0' });
+    assert.match(gone.content, /no longer protecting you/i);
+    assert.strictEqual(await rows(), 1);
+
+    const already = await run('unprotect', { user: { id: '888111222' }, permissions: '0' });
+    assert.match(already.content, /were not protected/i,
+      'unprotecting twice should say so rather than pretend');
   });
 
-  await check('/troll stops at TROLL_LIMIT and says that it did', async () => {
-    process.env.TROLL_LIMIT = '1';
-    const world = trollWorld();
-    const body = await troll('troll', { user: { id: '888111222' }, permissions: '8' });
-    world.restore();
-    delete process.env.TROLL_LIMIT;
-
-    // A limit of one takes the first human in member-list order and leaves the rest alone.
-    assert.deepStrictEqual(world.patched.map((c) => c.id), ['111'],
-      'one means one, and the same one every time');
-    assert.strictEqual(world.patched[0].body.deaf, true);
-
-    assert.match(body.data.content, /<@111>/);
-    assert.doesNotMatch(body.data.content, /<@222>/, 'nobody else should be named');
-    assert.match(body.data.content, /TROLL_LIMIT is 1/,
-      'a capped troll has to look capped, not broken');
-    assert.match(body.data.content, /TROLL_LIMIT=all/, 'and say how to lift it');
-    assert.deepStrictEqual(body.data.allowed_mentions, { users: ['111'] },
-      'pings exactly the person it acted on, never @everyone');
-  });
-
-  await check('TROLL_LIMIT=all takes the whole channel and nobody outside it', async () => {
-    process.env.TROLL_LIMIT = 'all';
-    const world = trollWorld();
-    const body = await troll('troll', { user: { id: '888111222' }, permissions: '8' });
-    world.restore();
-    delete process.env.TROLL_LIMIT;
-
-    assert.deepStrictEqual(world.patched.map((c) => c.id).sort(), ['111', '222'],
-      'only the humans in VC1 — not VC2, not the bot, not the caller');
-    assert.ok(world.patched.every((c) => c.body.deaf === true), 'every one of them deafened');
-    assert.doesNotMatch(body.data.content, /TROLL_LIMIT/,
-      'nothing was held back, so there is nothing to explain');
-    assert.deepStrictEqual(body.data.allowed_mentions, { users: ['111', '222'] });
-  });
-
-  await check('a missing or nonsense TROLL_LIMIT means one, not everyone', async () => {
-    process.env.TROLL_LIMIT = 'banana';
-    const world = trollWorld();
-    await troll('troll', { user: { id: '888111222' }, permissions: '8' });
-    world.restore();
-    delete process.env.TROLL_LIMIT;
-
-    assert.deepStrictEqual(world.patched.map((c) => c.id), ['111'],
-      'a value nobody can read must fail safe, not open the floodgates');
-  });
-
-  await check('/untroll is never capped, and reaches the caller too', async () => {
-    // Deliberately left at one: a cap on the joke must not become a cap on the undo.
-    process.env.TROLL_LIMIT = '1';
-    const world = trollWorld();
-    const body = await troll('untroll', { user: { id: '888111222' }, permissions: '8' });
-    world.restore();
-    delete process.env.TROLL_LIMIT;
-
-    assert.deepStrictEqual(world.patched.map((c) => c.id).sort(), ['111', '222', '888111222'],
-      'everyone in there, caller included, whatever TROLL_LIMIT says');
-    assert.ok(world.patched.every((c) => c.body.deaf === false), 'deaf must be cleared');
-    assert.match(body.data.content, /unbaited/);
-  });
-
-  await check('/troll needs Deafen Members and someone to troll', async () => {
-    const world = trollWorld();
-
-    const noPerm = await troll('troll', { user: { id: '999000111222' }, permissions: '0' });
-    assert.match(noPerm.data.content, /deafen members/i);
-    assert.strictEqual(noPerm.data.flags, 64, 'and refuse privately');
-    assert.strictEqual(world.patched.length, 0, 'nobody gets deafened without the permission');
-
-    // Someone with the permission but not sitting in a voice channel themselves.
-    const noVoice = await troll('troll', { user: { id: '444' }, permissions: String(1n << 23n) });
-    world.restore();
-
-    assert.match(noVoice.data.content, /join a voice channel/i,
-      'should say what to do rather than silently doing nothing');
-    assert.strictEqual(world.patched.length, 0);
-  });
-
-  await check('/troll says what to fix when it cannot read the member list', async () => {
-    const realFetch = global.fetch;
-    global.fetch = async (url, opts = {}) => {
-      const u = String(url);
-      if (!u.includes('discord.com/api/')) return realFetch(url, opts);
-      if (u.includes('/voice-states/')) {
-        return { ok: true, status: 200, text: async () => JSON.stringify({ channel_id: 'VC1' }) };
-      }
-      // What Discord says when the Server Members Intent is switched off.
-      return { ok: false, status: 403, text: async () => JSON.stringify({ code: 50001, message: 'Missing Access' }) };
+  await check('only an admin can strip someone else of protection', async () => {
+    const run = async (member, options) => {
+      const res = await fetch(base + '/api/discord/interactions', signIt({
+        type: 2, guild_id: '1360419275528994916',
+        data: { name: 'unprotect', options },
+        member,
+      }));
+      return (await res.json()).data;
     };
 
-    const body = await troll('troll', { user: { id: '888111222' }, permissions: '8' });
-    global.fetch = realFetch;
+    const target = [{ name: 'user', value: '424242424242' }];
+    assert.strictEqual(
+      await countRows("SELECT count(*)::int c FROM voice_protections WHERE discord_id = '424242424242'"),
+      1, 'still protected from the previous check'
+    );
 
-    assert.match(body.data.content, /server members intent/i,
-      'name the switch to flip, not just that it failed');
+    // Otherwise whoever wanted them muted would just unprotect them first.
+    const nope = await run({ user: { id: '999000111222' }, permissions: '0' }, target);
+    assert.match(nope.content, /only an admin/i);
+    assert.strictEqual(
+      await countRows("SELECT count(*)::int c FROM voice_protections WHERE discord_id = '424242424242'"),
+      1, 'and the row must still be there'
+    );
+
+    const admin = await run({ user: { id: '888111222' }, permissions: '8' }, target);
+    assert.match(admin.content, /no longer protecting/i);
+    assert.strictEqual(await countRows('SELECT count(*)::int c FROM voice_protections'), 0);
   });
 
   await check('/kick explains why it failed rather than going quiet', async () => {

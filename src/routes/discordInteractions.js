@@ -152,7 +152,7 @@ const PERMISSIONS = {
 // admin: if Discord already trusts you to do this by right-clicking someone, the bot
 // should not second-guess it — and it means nobody has to link an account first.
 // Interactions carry the invoking member's computed permissions as a bitfield string.
-function voiceCommandContext(interaction, needed, { target = true } = {}) {
+function voiceCommandContext(interaction, needed) {
   const guildId = interaction.guild_id;
   if (!guildId) return { error: reply('This only works in a server.') };
 
@@ -169,8 +169,6 @@ function voiceCommandContext(interaction, needed, { target = true } = {}) {
         + 'in this server to do that.'),
     };
   }
-
-  if (!target) return { guildId, callerDiscordId };
 
   const targetId = String(
     (interaction.data.options || []).find((o) => o.name === 'user')?.value || ''
@@ -210,170 +208,65 @@ async function handleDeafen(interaction, deaf) {
   };
 }
 
-// Members whose voice state is worth asking about, and how many of those questions to
-// have in flight at once. Discord rate limits per route, and a friend-sized server is a
-// few dozen calls, so a handful of lanes is the right amount of parallel.
-const MAX_SCAN = 400;
-const LANES = 8;
-
-// How many people one /troll is allowed to deafen. One by default, so the command can be
-// tried on a real channel without emptying it; TROLL_LIMIT=all takes the whole room, or
-// set a number. Undoing is never capped — whatever /troll reached, /untroll can reach.
-function trollLimit() {
-  const raw = (process.env.TROLL_LIMIT || '').trim().toLowerCase();
-  if (raw === 'all') return Infinity;
-  const n = Number(raw);
-  return Number.isInteger(n) && n > 0 ? n : 1;
-}
-
-// Everything has to happen inside Discord's three seconds, so the scan gets a budget and
-// hands back what it has when the budget runs out. A partial answer beats a timeout, and
-// a timeout is all a deferred reply would buy here: see handleTroll.
-const SCAN_BUDGET_MS = 2200;
-
-// Who, of these candidates, is sitting in this channel.
+// /protect writes a row; something else has to act on it.
 //
-// Chunk by chunk in member-list order rather than a free-for-all worker pool, because it
-// stops as soon as it has enough people — so a capped /troll reads the first few members
-// and goes, and it picks the same ones every time instead of whoever answered fastest.
-async function occupantsOf(guildId, channel, candidates, wanted) {
-  const deadline = Date.now() + SCAN_BUDGET_MS;
-  const found = [];
-  let checked = 0;
-
-  for (let i = 0; i < candidates.length; i += LANES) {
-    const chunk = candidates.slice(i, i + LANES);
-    const hits = await Promise.all(chunk.map(async (m) => {
-      const state = await bot.voiceStateOf(guildId, m.user.id);
-      return state.ok && state.body?.channel_id === channel ? m.user.id : null;
-    }));
-    checked += chunk.length;
-    found.push(...hits.filter(Boolean));
-    if (found.length >= wanted || Date.now() > deadline) break;
-  }
-
-  return { found, checked };
-}
-
-const announce = (content, users = []) => ({
-  content,
-  // Never a bare parse: a command that acts on a roomful of people must not be able to
-  // turn into an @everyone.
-  allowed_mentions: users.length ? { users: users.slice(0, 100) } : { parse: [] },
-});
-
-function explainMemberList(result) {
-  if (result.code === 50001 || result.status === 403) {
-    return 'I cannot read the member list, and without it there is no way to work out '
-      + 'who is in a voice channel. Turn on **Server Members Intent** under Developer '
-      + 'Portal, Bot, Privileged Gateway Intents.';
-  }
-  return 'Could not read the member list. ' + bot.explainFailure(result);
-}
-
-// Everyone in one voice channel, deafened or undeafened in one go.
+// Nothing here can watch a voice channel: this endpoint only exists for the few hundred
+// milliseconds Discord is waiting on it. The watcher is scripts/protect-worker.cjs, a
+// separate always-on process holding a gateway connection, and this table is how the two
+// talk to each other.
 //
-// Gated on Deafen Members exactly like /deafen: this is the same action, just repeated,
-// so it should not be easier to reach than doing it by hand. The caller is left out when
-// deafening — self-targeting is refused everywhere else too — but included when lifting
-// it, so whoever ran it can undo it on themselves as well.
-// Answered in one go rather than deferred. A deferred reply would be the natural shape
-// for work this chatty, but there is nowhere to run it: on Vercel the invocation ends
-// when the response is flushed, so the follow-up never happens and the placeholder sits
-// at "thinking…" forever. So the scan is budgeted to fit instead.
-async function handleTroll(interaction, deaf) {
-  const ctx = voiceCommandContext(interaction, 'DEAFEN_MEMBERS', { target: false });
-  if (ctx.error) return ctx.error;
+// Protecting is open to anyone — it is a favour, and the Discord permission that matters
+// belongs to the people doing the muting. Taking someone else's protection away is not
+// open to anyone, or whoever wanted them muted would simply do that first.
+async function handleProtect(interaction, protecting) {
+  const guildId = interaction.guild_id;
+  if (!guildId) return reply('This only works in a server.');
 
-  const picked = String(
-    (interaction.data.options || []).find((o) => o.name === 'channel')?.value || ''
+  const callerDiscordId = interaction.member?.user?.id || interaction.user?.id;
+  if (!callerDiscordId) return reply('Could not tell who you are.');
+
+  const targetId = String(
+    (interaction.data.options || []).find((o) => o.name === 'user')?.value || callerDiscordId
   );
+  const self = targetId === callerDiscordId;
 
-  // No ephemeral flag: like /deafen, the callout is the point.
-  return { type: 4, data: await trollChannel({ ...ctx, picked, deaf }) };
-}
-
-async function trollChannel({ guildId, callerDiscordId, picked, deaf }) {
-  let channel = picked;
-  if (!channel) {
-    const mine = await bot.voiceStateOf(guildId, callerDiscordId);
-    channel = mine.ok ? mine.body?.channel_id : null;
-    if (!channel) {
-      return announce('Join a voice channel first, or pick one with the `channel` option.');
+  if (!protecting && !self) {
+    let held = 0n;
+    try { held = BigInt(interaction.member?.permissions || '0'); } catch { held = 0n; }
+    if ((held & PERMISSIONS.ADMINISTRATOR) === 0n) {
+      return reply('Only an admin can take someone else\'s protection off. '
+        + 'They can drop it themselves with `/unprotect`.');
     }
   }
 
-  const members = await bot.listMembers(guildId);
-  if (!members.ok || !Array.isArray(members.body)) {
-    return announce(explainMemberList(members));
-  }
-
-  // Bots have nothing to be deafened out of, and the caller is spared when deafening.
-  const candidates = members.body
-    .filter((m) => m.user && !m.user.bot)
-    .filter((m) => !(deaf && m.user.id === callerDiscordId))
-    .slice(0, MAX_SCAN);
-
-  const wanted = deaf ? trollLimit() : Infinity;
-  const { found: inChannel, checked } = await occupantsOf(guildId, channel, candidates, wanted);
-
-  if (!inChannel.length) {
-    return announce(
-      (deaf ? `Nobody to bait in <#${channel}>.` : `Nobody is in <#${channel}>.`)
-      + (checked < candidates.length
-        ? ` (Only got through ${checked} of ${candidates.length} members before running out of time.)`
-        : '')
+  if (protecting) {
+    await query(
+      `INSERT INTO voice_protections (guild_id, discord_id, added_by)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (guild_id, discord_id) DO UPDATE SET added_by = EXCLUDED.added_by`,
+      [guildId, targetId, callerDiscordId]
+    );
+    return reply(
+      (self ? 'You are protected.' : `<@${targetId}> is protected.`)
+      + ' Any server mute or deafen will be undone within about a second.'
+      + '\n\nMuting yourself still works — this only undoes what other people do to you.'
     );
   }
 
-  const present = inChannel.slice(0, wanted);
-
-  // Capped at TROLL_LIMIT or a channel's worth, so a few chunks covers it.
-  const done = [];
-  const refused = [];
-  for (let i = 0; i < present.length; i += LANES) {
-    const results = await Promise.all(
-      present.slice(i, i + LANES).map(async (id) => ({
-        id, result: await bot.setDeafened(guildId, id, deaf),
-      }))
-    );
-    for (const r of results) (r.result.ok ? done : refused).push(r);
-  }
-
-  if (!done.length) {
-    return announce(
-      (deaf ? 'Could not bait anyone. ' : 'Could not lift it off anyone. ')
-      + explainMemberEdit(refused[0].result, 'Deafen Members')
-    );
-  }
-
-  const ids = done.map((d) => d.id);
-  // Named rather than counted while the list is short, which is the whole point of it.
-  const named = ids.length <= 20
-    ? ids.map((id) => `<@${id}>`).join(' ')
-    : `${ids.length} of them`;
-
-  const skipped = refused.length
-    ? `\n(${refused.length} out of reach — the bot's role has to sit above theirs.)`
-    : '';
-
-  // Otherwise a /troll that quietly hit one of five looks broken rather than capped. The
-  // scan stops once it has enough, so this counts what was asked for, not what is in there.
-  const capped = deaf && Number.isFinite(wanted) && inChannel.length >= wanted
-    ? `\n(TROLL_LIMIT is ${wanted} — set TROLL_LIMIT=all to take the room.)`
-    : '';
-
-  return announce(
-    (deaf ? `🔇 ${named} baited in <#${channel}>` : `🔊 ${named} unbaited in <#${channel}>`)
-      + capped + skipped,
-    ids
+  const { rowCount } = await query(
+    'DELETE FROM voice_protections WHERE guild_id = $1 AND discord_id = $2',
+    [guildId, targetId]
   );
+  if (!rowCount) {
+    return reply(self ? 'You were not protected.' : `<@${targetId}> was not protected.`);
+  }
+  return reply(self ? 'No longer protecting you.' : `No longer protecting <@${targetId}>.`);
 }
 
 async function handleCommand(interaction) {
   if (interaction.data?.name === 'leaderboard') return handleLeaderboard(interaction);
-  if (interaction.data?.name === 'troll') return handleTroll(interaction, true);
-  if (interaction.data?.name === 'untroll') return handleTroll(interaction, false);
+  if (interaction.data?.name === 'protect') return handleProtect(interaction, true);
+  if (interaction.data?.name === 'unprotect') return handleProtect(interaction, false);
   if (interaction.data?.name === 'kick') return handleKick(interaction);
   if (interaction.data?.name === 'deafen') return handleDeafen(interaction, true);
   if (interaction.data?.name === 'undeafen') return handleDeafen(interaction, false);
