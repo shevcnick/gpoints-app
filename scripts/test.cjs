@@ -1575,10 +1575,9 @@ async function main() {
     global.fetch = realFetch;
   });
 
-  // /troll answers Discord straight away and does the work afterwards, so a stub server
-  // has to wait for the follow-up edit rather than reading the first response.
-  //
-  // Voice channel VC1 holds two people plus the caller and a bot; VC2 holds one more.
+  // A stub Discord where voice channel VC1 holds 111, 222, a bot and the caller, and VC2
+  // holds 333. /troll answers inside the interaction response, so the assertions read that
+  // rather than waiting on a follow-up edit — there is nowhere on serverless to run one.
   function trollWorld() {
     const members = [
       { user: { id: '111', username: 'alpha' } },
@@ -1591,19 +1590,13 @@ async function main() {
     const channels = { 111: 'VC1', 222: 'VC1', 333: 'VC2', 999: 'VC1', 888111222: 'VC1' };
 
     const patched = [];
-    let followUp = null;
     const realFetch = global.fetch;
-
     const json = (body) => ({ ok: true, status: 200, text: async () => JSON.stringify(body) });
 
     global.fetch = async (url, opts = {}) => {
       const u = String(url);
       if (!u.includes('discord.com/api/')) return realFetch(url, opts);
 
-      if (u.includes('/messages/@original')) {
-        followUp = { url: u, body: JSON.parse(opts.body) };
-        return json({});
-      }
       if (u.includes('/members?limit=1000')) return json(members);
 
       const voice = u.match(/\/voice-states\/(\d+)$/);
@@ -1622,86 +1615,74 @@ async function main() {
       return json({});
     };
 
-    return {
-      patched,
-      restore: () => { global.fetch = realFetch; },
-      // The HTTP response comes back before the work is finished, by design.
-      settled: async () => {
-        for (let i = 0; i < 400 && !followUp; i++) await new Promise((r) => setTimeout(r, 5));
-        assert.ok(followUp, 'the deferred reply was never edited into an answer');
-        return followUp;
-      },
-    };
+    return { patched, restore: () => { global.fetch = realFetch; } };
   }
 
-  const troll = (name, member, options = []) =>
-    fetch(base + '/api/discord/interactions', signIt({
+  const troll = async (name, member, options = []) => {
+    const res = await fetch(base + '/api/discord/interactions', signIt({
       type: 2, guild_id: '1360419275528994916', channel_id: '777888999',
       token: 'interaction-token-abc',
       data: { name, options },
       member,
     }));
+    return res.json();
+  };
 
-  await check('/troll stops at TROLL_LIMIT and says that it did', async () => {
-    process.env.DISCORD_APPLICATION_ID = '555000';
+  await check('/troll answers in one shot, never a deferred placeholder', async () => {
+    // A deferred reply (type 5) would strand the interaction at "thinking…": on Vercel
+    // the invocation ends when the response is flushed, so the follow-up never runs.
     process.env.TROLL_LIMIT = '1';
     const world = trollWorld();
-
-    const res = await troll('troll', { user: { id: '888111222' }, permissions: '8' });
-    assert.deepStrictEqual(await res.json(), { type: 5 },
-      'must acknowledge inside the 3 second window, not answer late');
-
-    const followUp = await world.settled();
+    const body = await troll('troll', { user: { id: '888111222' }, permissions: '8' });
     world.restore();
-    delete process.env.DISCORD_APPLICATION_ID;
     delete process.env.TROLL_LIMIT;
 
-    assert.match(followUp.url, /\/webhooks\/555000\/interaction-token-abc\/messages\/@original$/,
-      'the answer must edit the placeholder this interaction left');
+    assert.strictEqual(body.type, 4, 'must be a real reply, not an acknowledgement');
+    assert.notStrictEqual(body.data.flags, 64, 'and the callout should be public');
+    assert.ok(body.data.content, 'with the answer already in it');
+  });
 
-    // VC1 holds 111, 222, the bot and the caller. A limit of one takes the first human
-    // in member-list order and leaves the rest alone.
+  await check('/troll stops at TROLL_LIMIT and says that it did', async () => {
+    process.env.TROLL_LIMIT = '1';
+    const world = trollWorld();
+    const body = await troll('troll', { user: { id: '888111222' }, permissions: '8' });
+    world.restore();
+    delete process.env.TROLL_LIMIT;
+
+    // A limit of one takes the first human in member-list order and leaves the rest alone.
     assert.deepStrictEqual(world.patched.map((c) => c.id), ['111'],
       'one means one, and the same one every time');
     assert.strictEqual(world.patched[0].body.deaf, true);
 
-    assert.match(followUp.body.content, /<@111>/);
-    assert.doesNotMatch(followUp.body.content, /<@222>/, 'nobody else should be named');
-    assert.match(followUp.body.content, /1 of 2 in there/,
+    assert.match(body.data.content, /<@111>/);
+    assert.doesNotMatch(body.data.content, /<@222>/, 'nobody else should be named');
+    assert.match(body.data.content, /TROLL_LIMIT is 1/,
       'a capped troll has to look capped, not broken');
-    assert.match(followUp.body.content, /TROLL_LIMIT=all/, 'and say how to lift it');
-    assert.deepStrictEqual(followUp.body.allowed_mentions, { users: ['111'] },
+    assert.match(body.data.content, /TROLL_LIMIT=all/, 'and say how to lift it');
+    assert.deepStrictEqual(body.data.allowed_mentions, { users: ['111'] },
       'pings exactly the person it acted on, never @everyone');
   });
 
   await check('TROLL_LIMIT=all takes the whole channel and nobody outside it', async () => {
-    process.env.DISCORD_APPLICATION_ID = '555000';
     process.env.TROLL_LIMIT = 'all';
     const world = trollWorld();
-
-    await troll('troll', { user: { id: '888111222' }, permissions: '8' });
-    const followUp = await world.settled();
+    const body = await troll('troll', { user: { id: '888111222' }, permissions: '8' });
     world.restore();
-    delete process.env.DISCORD_APPLICATION_ID;
     delete process.env.TROLL_LIMIT;
 
     assert.deepStrictEqual(world.patched.map((c) => c.id).sort(), ['111', '222'],
       'only the humans in VC1 — not VC2, not the bot, not the caller');
     assert.ok(world.patched.every((c) => c.body.deaf === true), 'every one of them deafened');
-    assert.doesNotMatch(followUp.body.content, /of 2 in there/,
+    assert.doesNotMatch(body.data.content, /TROLL_LIMIT/,
       'nothing was held back, so there is nothing to explain');
-    assert.deepStrictEqual(followUp.body.allowed_mentions, { users: ['111', '222'] });
+    assert.deepStrictEqual(body.data.allowed_mentions, { users: ['111', '222'] });
   });
 
   await check('a missing or nonsense TROLL_LIMIT means one, not everyone', async () => {
-    process.env.DISCORD_APPLICATION_ID = '555000';
     process.env.TROLL_LIMIT = 'banana';
     const world = trollWorld();
-
     await troll('troll', { user: { id: '888111222' }, permissions: '8' });
-    await world.settled();
     world.restore();
-    delete process.env.DISCORD_APPLICATION_ID;
     delete process.env.TROLL_LIMIT;
 
     assert.deepStrictEqual(world.patched.map((c) => c.id), ['111'],
@@ -1709,54 +1690,41 @@ async function main() {
   });
 
   await check('/untroll is never capped, and reaches the caller too', async () => {
-    process.env.DISCORD_APPLICATION_ID = '555000';
     // Deliberately left at one: a cap on the joke must not become a cap on the undo.
     process.env.TROLL_LIMIT = '1';
     const world = trollWorld();
-
-    await troll('untroll', { user: { id: '888111222' }, permissions: '8' });
-    const followUp = await world.settled();
+    const body = await troll('untroll', { user: { id: '888111222' }, permissions: '8' });
     world.restore();
-    delete process.env.DISCORD_APPLICATION_ID;
-
     delete process.env.TROLL_LIMIT;
 
-    const ids = world.patched.map((c) => c.id).sort();
-    assert.deepStrictEqual(ids, ['111', '222', '888111222'],
+    assert.deepStrictEqual(world.patched.map((c) => c.id).sort(), ['111', '222', '888111222'],
       'everyone in there, caller included, whatever TROLL_LIMIT says');
     assert.ok(world.patched.every((c) => c.body.deaf === false), 'deaf must be cleared');
-    assert.match(followUp.body.content, /unbaited/);
+    assert.match(body.data.content, /unbaited/);
   });
 
   await check('/troll needs Deafen Members and someone to troll', async () => {
     const world = trollWorld();
 
     const noPerm = await troll('troll', { user: { id: '999000111222' }, permissions: '0' });
-    const refusal = await noPerm.json();
-    assert.match(refusal.data.content, /deafen members/i);
-    assert.strictEqual(refusal.data.flags, 64, 'and refuse privately');
+    assert.match(noPerm.data.content, /deafen members/i);
+    assert.strictEqual(noPerm.data.flags, 64, 'and refuse privately');
     assert.strictEqual(world.patched.length, 0, 'nobody gets deafened without the permission');
 
     // Someone with the permission but not sitting in a voice channel themselves.
-    await troll('troll', { user: { id: '444' }, permissions: String(1n << 23n) });
-    const followUp = await world.settled();
+    const noVoice = await troll('troll', { user: { id: '444' }, permissions: String(1n << 23n) });
     world.restore();
 
-    assert.match(followUp.body.content, /join a voice channel/i,
+    assert.match(noVoice.data.content, /join a voice channel/i,
       'should say what to do rather than silently doing nothing');
     assert.strictEqual(world.patched.length, 0);
   });
 
   await check('/troll says what to fix when it cannot read the member list', async () => {
     const realFetch = global.fetch;
-    let followUp = null;
     global.fetch = async (url, opts = {}) => {
       const u = String(url);
       if (!u.includes('discord.com/api/')) return realFetch(url, opts);
-      if (u.includes('/messages/@original')) {
-        followUp = JSON.parse(opts.body);
-        return { ok: true, status: 200, text: async () => '{}' };
-      }
       if (u.includes('/voice-states/')) {
         return { ok: true, status: 200, text: async () => JSON.stringify({ channel_id: 'VC1' }) };
       }
@@ -1764,12 +1732,10 @@ async function main() {
       return { ok: false, status: 403, text: async () => JSON.stringify({ code: 50001, message: 'Missing Access' }) };
     };
 
-    await troll('troll', { user: { id: '888111222' }, permissions: '8' });
-    for (let i = 0; i < 400 && !followUp; i++) await new Promise((r) => setTimeout(r, 5));
+    const body = await troll('troll', { user: { id: '888111222' }, permissions: '8' });
     global.fetch = realFetch;
 
-    assert.ok(followUp, 'a failure still has to replace the placeholder');
-    assert.match(followUp.content, /server members intent/i,
+    assert.match(body.data.content, /server members intent/i,
       'name the switch to flip, not just that it failed');
   });
 

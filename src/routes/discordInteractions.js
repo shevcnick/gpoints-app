@@ -18,7 +18,6 @@ const MESSAGE_COMPONENT = 3;
 const AUTOCOMPLETE = 4;
 
 const PONG = 1;
-const DEFERRED_REPLY = 5; // "thinking…", edited into the real answer later
 const UPDATE_MESSAGE = 7;
 const AUTOCOMPLETE_RESULT = 8;
 const EPHEMERAL = 64; // only the clicker sees it
@@ -57,26 +56,7 @@ router.post('/', async (req, res) => {
     }
 
     if (interaction.type === APPLICATION_COMMAND) {
-      const result = await handleCommand(interaction);
-
-      // Discord wants an answer within 3 seconds. A command that cannot be that quick
-      // hands back the rest of its work instead: acknowledge now, then keep doing it.
-      //
-      // The work is awaited before this handler returns, deliberately. On serverless the
-      // invocation is alive until the handler resolves, not until the response is
-      // flushed, so anything left running after an early return can simply be frozen.
-      if (result?.deferred) {
-        res.json({ type: DEFERRED_REPLY });
-        try {
-          await result.deferred();
-        } catch (err) {
-          // The reply has already gone out, so there is nothing left to tell Discord.
-          console.error('Deferred command failed: ' + err.message);
-        }
-        return;
-      }
-
-      return res.json(result);
+      return res.json(await handleCommand(interaction));
     }
 
     if (interaction.type !== MESSAGE_COMPONENT) {
@@ -246,22 +226,36 @@ function trollLimit() {
   return Number.isInteger(n) && n > 0 ? n : 1;
 }
 
-// A worker pool small enough to read: each lane takes the next item until there are none.
-// The position comes along with the item, because lanes finish out of order and a capped
-// /troll has to pick the same person every time rather than whoever answered first.
-async function inLanes(items, width, work) {
-  let next = 0;
-  await Promise.all(
-    Array.from({ length: Math.min(width, items.length) }, async () => {
-      while (next < items.length) {
-        const at = next++;
-        await work(items[at], at);
-      }
-    })
-  );
+// Everything has to happen inside Discord's three seconds, so the scan gets a budget and
+// hands back what it has when the budget runs out. A partial answer beats a timeout, and
+// a timeout is all a deferred reply would buy here: see handleTroll.
+const SCAN_BUDGET_MS = 2200;
+
+// Who, of these candidates, is sitting in this channel.
+//
+// Chunk by chunk in member-list order rather than a free-for-all worker pool, because it
+// stops as soon as it has enough people — so a capped /troll reads the first few members
+// and goes, and it picks the same ones every time instead of whoever answered fastest.
+async function occupantsOf(guildId, channel, candidates, wanted) {
+  const deadline = Date.now() + SCAN_BUDGET_MS;
+  const found = [];
+  let checked = 0;
+
+  for (let i = 0; i < candidates.length; i += LANES) {
+    const chunk = candidates.slice(i, i + LANES);
+    const hits = await Promise.all(chunk.map(async (m) => {
+      const state = await bot.voiceStateOf(guildId, m.user.id);
+      return state.ok && state.body?.channel_id === channel ? m.user.id : null;
+    }));
+    checked += chunk.length;
+    found.push(...hits.filter(Boolean));
+    if (found.length >= wanted || Date.now() > deadline) break;
+  }
+
+  return { found, checked };
 }
 
-const followUp = (content, users = []) => ({
+const announce = (content, users = []) => ({
   content,
   // Never a bare parse: a command that acts on a roomful of people must not be able to
   // turn into an @everyone.
@@ -283,6 +277,10 @@ function explainMemberList(result) {
 // so it should not be easier to reach than doing it by hand. The caller is left out when
 // deafening — self-targeting is refused everywhere else too — but included when lifting
 // it, so whoever ran it can undo it on themselves as well.
+// Answered in one go rather than deferred. A deferred reply would be the natural shape
+// for work this chatty, but there is nowhere to run it: on Vercel the invocation ends
+// when the response is flushed, so the follow-up never happens and the placeholder sits
+// at "thinking…" forever. So the scan is budgeted to fit instead.
 async function handleTroll(interaction, deaf) {
   const ctx = voiceCommandContext(interaction, 'DEAFEN_MEMBERS', { target: false });
   if (ctx.error) return ctx.error;
@@ -291,11 +289,8 @@ async function handleTroll(interaction, deaf) {
     (interaction.data.options || []).find((o) => o.name === 'channel')?.value || ''
   );
 
-  // Dozens of Discord calls follow, which is well past the 3 second window.
-  return {
-    deferred: () => trollChannel({ ...ctx, picked, deaf })
-      .then((body) => bot.editDeferredReply(interaction.token, body)),
-  };
+  // No ephemeral flag: like /deafen, the callout is the point.
+  return { type: 4, data: await trollChannel({ ...ctx, picked, deaf }) };
 }
 
 async function trollChannel({ guildId, callerDiscordId, picked, deaf }) {
@@ -304,13 +299,13 @@ async function trollChannel({ guildId, callerDiscordId, picked, deaf }) {
     const mine = await bot.voiceStateOf(guildId, callerDiscordId);
     channel = mine.ok ? mine.body?.channel_id : null;
     if (!channel) {
-      return followUp('Join a voice channel first, or pick one with the `channel` option.');
+      return announce('Join a voice channel first, or pick one with the `channel` option.');
     }
   }
 
   const members = await bot.listMembers(guildId);
   if (!members.ok || !Array.isArray(members.body)) {
-    return followUp(explainMemberList(members));
+    return announce(explainMemberList(members));
   }
 
   // Bots have nothing to be deafened out of, and the caller is spared when deafening.
@@ -319,31 +314,34 @@ async function trollChannel({ guildId, callerDiscordId, picked, deaf }) {
     .filter((m) => !(deaf && m.user.id === callerDiscordId))
     .slice(0, MAX_SCAN);
 
-  // Indexed rather than pushed, so the order is the member list's and not the lanes'.
-  const found = [];
-  await inLanes(candidates, LANES, async (m, at) => {
-    const state = await bot.voiceStateOf(guildId, m.user.id);
-    if (state.ok && state.body?.channel_id === channel) found[at] = m.user.id;
-  });
-  const inChannel = found.filter(Boolean);
+  const wanted = deaf ? trollLimit() : Infinity;
+  const { found: inChannel, checked } = await occupantsOf(guildId, channel, candidates, wanted);
 
   if (!inChannel.length) {
-    return followUp(
-      deaf ? `Nobody to bait in <#${channel}>.` : `Nobody is in <#${channel}>.`
+    return announce(
+      (deaf ? `Nobody to bait in <#${channel}>.` : `Nobody is in <#${channel}>.`)
+      + (checked < candidates.length
+        ? ` (Only got through ${checked} of ${candidates.length} members before running out of time.)`
+        : '')
     );
   }
 
-  const present = deaf ? inChannel.slice(0, trollLimit()) : inChannel;
+  const present = inChannel.slice(0, wanted);
 
+  // Capped at TROLL_LIMIT or a channel's worth, so a few chunks covers it.
   const done = [];
   const refused = [];
-  await inLanes(present, LANES, async (id) => {
-    const result = await bot.setDeafened(guildId, id, deaf);
-    (result.ok ? done : refused).push({ id, result });
-  });
+  for (let i = 0; i < present.length; i += LANES) {
+    const results = await Promise.all(
+      present.slice(i, i + LANES).map(async (id) => ({
+        id, result: await bot.setDeafened(guildId, id, deaf),
+      }))
+    );
+    for (const r of results) (r.result.ok ? done : refused).push(r);
+  }
 
   if (!done.length) {
-    return followUp(
+    return announce(
       (deaf ? 'Could not bait anyone. ' : 'Could not lift it off anyone. ')
       + explainMemberEdit(refused[0].result, 'Deafen Members')
     );
@@ -359,12 +357,13 @@ async function trollChannel({ guildId, callerDiscordId, picked, deaf }) {
     ? `\n(${refused.length} out of reach — the bot's role has to sit above theirs.)`
     : '';
 
-  // Otherwise a /troll that quietly hit one of five looks broken rather than capped.
-  const capped = present.length < inChannel.length
-    ? `\n(${present.length} of ${inChannel.length} in there — set TROLL_LIMIT=all to take the room.)`
+  // Otherwise a /troll that quietly hit one of five looks broken rather than capped. The
+  // scan stops once it has enough, so this counts what was asked for, not what is in there.
+  const capped = deaf && Number.isFinite(wanted) && inChannel.length >= wanted
+    ? `\n(TROLL_LIMIT is ${wanted} — set TROLL_LIMIT=all to take the room.)`
     : '';
 
-  return followUp(
+  return announce(
     (deaf ? `🔇 ${named} baited in <#${channel}>` : `🔊 ${named} unbaited in <#${channel}>`)
       + capped + skipped,
     ids

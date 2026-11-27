@@ -273,5 +273,8 @@ trusts you to do it by right-clicking someone, the bot does not second-guess it 
 has to link a G Points account first.
 
 `/troll` needs the members intent because there is no REST endpoint that lists who is in a
-voice channel: it reads the member list and asks about each one, which takes longer than
-Discord's three-second reply window, so it acknowledges first and edits the answer in.
+voice channel: it reads the member list and asks about each one. All of it has to fit in
+Discord's three-second reply window — a deferred "thinking…" reply is the usual way around
+that, but there is nowhere to run the rest of the work, because on Vercel the invocation
+ends when the response is flushed and the follow-up never happens. So the scan is budgeted
+instead: it stops once it has enough people, or when the time is nearly up, and says so.

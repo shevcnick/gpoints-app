@@ -214,14 +214,6 @@ const listMembers = (guildId) =>
 const voiceStateOf = (guildId, userId) =>
   api(`/guilds/${guildId}/voice-states/${userId}`);
 
-// Replaces the "thinking…" placeholder a deferred reply leaves behind. The interaction
-// token authenticates this on its own and is good for 15 minutes.
-const editDeferredReply = (interactionToken, body) =>
-  api(`/webhooks/${applicationId()}/${interactionToken}/messages/@original`, {
-    method: 'PATCH',
-    body: JSON.stringify(body),
-  });
-
 // The slash commands this app registers. Kept here so the registration script and the
 // handler cannot disagree about names or option order.
 const COMMANDS = [
@@ -386,5 +378,4 @@ module.exports = {
   configured, appVotingEnabled, verifySignature, proposalMessage, applicationId,
   postProposal, editProposal, api, escapeMarkdown, COMMANDS, channelId, explainFailure,
   leaderboardMessage, disconnectFromVoice, setDeafened, listMembers, voiceStateOf,
-  editDeferredReply,
 };
